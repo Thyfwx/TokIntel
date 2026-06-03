@@ -1,0 +1,8 @@
+#!/bin/sh
+# Double-clicking TokIntel.app runs this. It finds the repo (the app bundle
+# lives at <repo>/TokIntel.app/Contents/MacOS/TokIntel) and opens start.sh in
+# Terminal, which launches the UI. App bundles always launch, never open in an
+# editor, so this is the reliable double-click path on macOS.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../../.." && pwd)"
+open -a Terminal "$REPO/start.sh"

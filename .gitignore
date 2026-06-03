@@ -13,3 +13,6 @@ __pycache__/
 
 # Research Reports (DO NOT UPLOAD)
 reports/
+
+# macOS Finder metadata
+.DS_Store
