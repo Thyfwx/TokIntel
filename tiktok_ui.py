@@ -215,9 +215,12 @@ def main():
         extras_menu(data)
         results.append({"target": entry, "data": data})
 
-    if results:
+    successes = [r for r in results if isinstance(r.get("data"), dict) and "error" not in r["data"]]
+    if successes:
         _, tp = save_reports(results, "ui")
         console.print(f"\n[dim]Looked up {len(results)} · report saved →[/] {tp}")
+    elif results:
+        console.print("\n[yellow]Nothing worth saving — every lookup errored. No report written.[/]")
     console.print("\n[magenta]bye 👁[/]\n")
 
 

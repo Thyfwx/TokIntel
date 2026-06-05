@@ -87,7 +87,19 @@ def decode_snowflake(num):
 
 
 # ------------------------------------------------------------------ fetchers
+# TikTok usernames are letters / digits / underscore / period, up to 24 chars.
+# Anything else means the user pasted a sentence, a wrong URL, or random text;
+# refuse early with a clear hint instead of wasting a request and returning
+# the cryptic "user not found" code from TikTok.
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,24}$")
+
+
 def fetch_user(username, session):
+    if not USERNAME_RE.match(username):
+        return {"error": "That doesn't look like a TikTok username. "
+                         "Try just the @handle (e.g. 'nasa') or a "
+                         "tiktok.com profile URL."}
+
     # quote() leaves valid username characters (letters, digits, _ . - ~) as-is
     # but percent-encodes anything unusual, so a crafted target can't alter the
     # request structure. The host and scheme are already a fixed literal prefix.
@@ -122,7 +134,11 @@ def fetch_user(username, session):
     # prefer statsV2 and fall back to stats only if it's absent.
     stats = info.get("statsV2") or info.get("stats") or {}
     if not user:
-        return {"error": f"user not found (statusCode={status})"}
+        # TikTok's statusCode 10221 specifically means "no such user". Other
+        # codes are rare; keep the number for those cases but lead with English.
+        if status == 10221:
+            return {"error": "TikTok has no account with that username — check the spelling, or the account may have been deleted."}
+        return {"error": f"TikTok did not return a profile (status code {status})."}
 
     def as_int(v):
         try:
@@ -291,7 +307,8 @@ def integrity_flags(data):
             flags.append(("info", f"display name changed {days_since} days ago"))
 
     if not flags:
-        flags.append(("ok", "no anomalies surfaced by current heuristics"))
+        flags.append(("ok",
+            "Followers, age, handle history, and growth all look normal — no red flags."))
     return flags
 
 
@@ -541,9 +558,12 @@ def main():
                                   show_osint=args.osint, show_flags=args.flags)
         prefix = "interactive"
 
-    if results:
+    successes = [r for r in results if isinstance(r.get("data"), dict) and "error" not in r["data"]]
+    if successes:
         jp, tp = save_reports(results, prefix)
         print(Fore.CYAN + f"\n📁 Reports:\n   {jp}\n   {tp}\n")
+    elif results:
+        print(Fore.YELLOW + "\n📭 Nothing worth saving — every lookup this session errored. No report written.\n")
 
 
 if __name__ == "__main__":
