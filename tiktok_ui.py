@@ -197,8 +197,8 @@ def main():
     console.clear()
     header()
     console.print(
-        "  Type a [bold cyan]username[/], @handle, or profile/video URL.  "
-        "Empty line or [bold]q[/] to quit.\n")
+        "  Type a [bold cyan]username[/], @handle, or profile/video URL.\n"
+        "  [dim]To quit: empty line, q, Esc, or Ctrl-C.[/]\n")
 
     session = new_session()
     results = []
@@ -207,7 +207,8 @@ def main():
             entry = Prompt.ask("[bold magenta]🔎 lookup[/]", default="", show_default=False).strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not entry or entry.lower() in {"q", "quit", "exit"}:
+        # Accept Esc key (stdin sends \x1b) as another way to quit.
+        if not entry or entry.lower() in {"q", "quit", "exit"} or entry.startswith("\x1b"):
             break
         with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
             _, data = lookup(entry, session)

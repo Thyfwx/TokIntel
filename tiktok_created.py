@@ -339,12 +339,22 @@ def save_avatar(data, session=None):
     return None
 
 
+_CTRL_BYTES = {**{i: None for i in range(0x20)}, 0x7f: None}
+
+
 def _osc8(url, text=None):
     """Wrap a URL with OSC 8 escape codes so modern terminals (Terminal.app,
     iTerm2, kitty, Warp, GNOME, WezTerm) render it as a clickable hyperlink.
-    Old/unsupported terminals strip the escapes and just show `text`."""
-    text = text or url
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+    Old/unsupported terminals strip the escapes and just show `text`.
+
+    Security: strips ASCII control bytes (NUL..0x1f and 0x7f) from both the
+    URL and the visible text. Without this, a hostile field embedded with
+    \\x1b or \\x07 could break out of the OSC 8 wrapper and inject other
+    terminal escapes (e.g. OSC 52, which writes to the user's clipboard on
+    some terminals)."""
+    safe_url = url.translate(_CTRL_BYTES)
+    safe_text = (text or safe_url).translate(_CTRL_BYTES)
+    return f"\033]8;;{safe_url}\033\\{safe_text}\033]8;;\033\\"
 
 
 def print_pivots_plain(data, session=None):
