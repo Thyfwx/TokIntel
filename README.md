@@ -18,6 +18,8 @@
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
+- **Optional OSINT pivots** (opt in): reverse image search of the avatar (Yandex / Google Lens / TinEye), Wayback Machine link, same-handle probes on Instagram / X / YouTube / Twitch / Reddit, and the bio link from the profile.
+- **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and handle / display-name changes that can hint at a rebrand, sale, or takeover.
 - **Reports** saved to `reports/` as JSON and TXT.
 - A clean terminal UI, or a single command. No RapidAPI, no key, no card.
 
@@ -50,7 +52,14 @@ Prefer the command line?
 ```bash
 python3 tiktok_created.py charlidamelio
 python3 tiktok_created.py @nasa https://www.tiktok.com/@zachking
+
+# Optional extras (off by default)
+python3 tiktok_created.py charlidamelio --osint    # add pivot links
+python3 tiktok_created.py charlidamelio --flags    # add integrity heuristics
+python3 tiktok_created.py charlidamelio --all      # both
 ```
+
+In the interactive UI, a short numbered menu appears after each card so you can pull the extras up only when you want them.
 
 ## 🔍 How it works
 

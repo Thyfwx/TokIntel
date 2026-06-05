@@ -24,7 +24,9 @@ from rich import box
 
 # Reuse the validated lookup engine living next to this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tiktok_created import lookup, new_session, save_reports  # noqa: E402
+from tiktok_created import (  # noqa: E402
+    lookup, new_session, save_reports, osint_pivots, integrity_flags,
+)
 
 console = Console()
 
@@ -61,7 +63,8 @@ def header():
     tag.append(" ♪", style=TIKTOK_RED)
     sub = Text("when was this account created?  ·  no API key needed",
                style="dim italic", justify="center")
-    credit = Text("part of TokIntel · by Hack Underway", style="dim", justify="center")
+    credit = Text("part of TokIntel · by Hack Underway · contributed by @Thyfwx",
+                  style="dim", justify="center")
 
     body = Group(logo, tag, Text(""), sub, credit)
     console.print(Panel(body, box=box.DOUBLE, border_style=TIKTOK_CYAN, padding=(1, 3)))
@@ -116,6 +119,65 @@ def render(data):
         render_simple("id decode", f"📅  {data.get('decoded')}", note=data.get("note"))
 
 
+def render_pivots(data):
+    pivots = osint_pivots(data)
+    if not pivots:
+        console.print("[dim]   no pivots available for this result[/]")
+        return
+    tbl = Table.grid(padding=(0, 2))
+    tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)
+    tbl.add_column(style="white", overflow="fold")
+    for label, url in pivots:
+        tbl.add_row(label, f"[link={url}]{url}[/link]")
+    console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
+                        border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
+
+
+def render_flags(data):
+    flags = integrity_flags(data)
+    if not flags:
+        return
+    style = {"warn": ("⚠️ ", "yellow"), "info": ("ℹ️ ", "cyan"), "ok": ("✅", "green")}
+    body = Text()
+    for i, (sev, msg) in enumerate(flags):
+        icon, color = style.get(sev, ("·", "white"))
+        if i:
+            body.append("\n")
+        body.append(f"{icon} ", style=color)
+        body.append(msg)
+    border = "yellow" if any(s == "warn" for s, _ in flags) else (
+             "cyan" if any(s == "info" for s, _ in flags) else "green")
+    console.print(Panel(body, title="[bold]🚩 Integrity flags[/]",
+                        border_style=border, box=box.ROUNDED, padding=(1, 2)))
+
+
+def extras_menu(data):
+    """After an account card, offer the user a small numbered menu of extras.
+    Returning to the lookup prompt is always one Enter away — original UX
+    is preserved for anyone who doesn't want the new stuff."""
+    if not isinstance(data, dict) or data.get("type") != "account":
+        return
+    console.print(
+        "  [bold]What else?[/]  "
+        f"[{TIKTOK_CYAN}]1[/] pivot links  ·  "
+        f"[{TIKTOK_CYAN}]2[/] integrity flags  ·  "
+        f"[{TIKTOK_CYAN}]3[/] both  ·  "
+        "[dim]Enter to skip[/]"
+    )
+    try:
+        choice = Prompt.ask("[dim]  choose[/]", choices=["", "1", "2", "3"],
+                            default="", show_default=False, show_choices=False).strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if choice == "1":
+        render_pivots(data)
+    elif choice == "2":
+        render_flags(data)
+    elif choice == "3":
+        render_flags(data)
+        render_pivots(data)
+
+
 def main():
     console.clear()
     header()
@@ -135,6 +197,7 @@ def main():
         with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
             _, data = lookup(entry, session)
         render(data)
+        extras_menu(data)
         results.append({"target": entry, "data": data})
 
     if results:

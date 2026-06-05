@@ -125,6 +125,11 @@ def fetch_user(username, session):
     uid = user.get("id")
     id_est = decode_snowflake(uid) if uid and str(uid).isdigit() else None
 
+    # Extra fields that power OSINT pivots and integrity heuristics.
+    raw_bio_link = user.get("bioLink")
+    bio_link = raw_bio_link.get("link") if isinstance(raw_bio_link, dict) else (
+        raw_bio_link if isinstance(raw_bio_link, str) else None)
+
     return {
         "type": "account",
         "username": user.get("uniqueId") or username,
@@ -137,7 +142,13 @@ def fetch_user(username, session):
         "verified": user.get("verified"),
         "private": user.get("privateAccount"),
         "bio": user.get("signature"),
+        "bio_link": bio_link,
         "region": user.get("region"),
+        "avatar": user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb"),
+        "unique_id_modify_time": user.get("uniqueIdModifyTime"),
+        "nick_name_modify_time": user.get("nickNameModifyTime"),
+        "is_organization": user.get("isOrganization"),
+        "tt_seller": user.get("ttSeller"),
         "followers": as_int(stats.get("followerCount")),
         "following": as_int(stats.get("followingCount")),
         "likes": as_int(stats.get("heartCount")),
@@ -165,6 +176,132 @@ def decode_id(num):
                  "snowflake user IDs; small/legacy user IDs can't be decoded "
                  "this way — fetch the @username instead for createTime."),
     }
+
+
+# ----------------------------------------------------------- OSINT extras
+def osint_pivots(data):
+    """
+    Return an ordered list of (label, url) pivots for an account result.
+    These are URLs only — no fetches happen here. The user clicks them.
+    """
+    pivots = []
+    if not isinstance(data, dict) or data.get("type") != "account":
+        return pivots
+
+    username = data.get("username")
+    avatar = data.get("avatar")
+    bio_link = data.get("bio_link")
+
+    if avatar:
+        avq = quote(avatar, safe="")
+        pivots.append(("Yandex Images (best for faces)",
+                       f"https://yandex.com/images/search?rpt=imageview&url={avq}"))
+        pivots.append(("Google Lens",
+                       f"https://lens.google.com/uploadbyurl?url={avq}"))
+        pivots.append(("TinEye",
+                       f"https://tineye.com/search?url={avq}"))
+
+    if username:
+        pivots.append(("Wayback Machine (profile history)",
+                       f"https://web.archive.org/web/*/tiktok.com/@{quote(username, safe='')}"))
+        # Same-handle probes on other platforms. Some will 404; that itself is signal.
+        pivots.append(("Instagram", f"https://www.instagram.com/{username}/"))
+        pivots.append(("X / Twitter", f"https://x.com/{username}"))
+        pivots.append(("YouTube", f"https://www.youtube.com/@{username}"))
+        pivots.append(("Twitch", f"https://www.twitch.tv/{username}"))
+        pivots.append(("Reddit", f"https://www.reddit.com/user/{username}"))
+
+    if bio_link:
+        pivots.append(("Bio link (from their profile)", bio_link))
+
+    if data.get("avatar"):
+        pivots.append(("Avatar (direct image URL)", data["avatar"]))
+
+    return pivots
+
+
+def integrity_flags(data):
+    """
+    Heuristic flags spotted purely from the data we already pulled. Returns a
+    list of (severity, message) tuples where severity is 'warn' | 'info' | 'ok'.
+    No new network calls. Heuristics are inference, not proof.
+    """
+    flags = []
+    if not isinstance(data, dict) or data.get("type") != "account":
+        return flags
+
+    followers = data.get("followers") if isinstance(data.get("followers"), int) else None
+    following = data.get("following") if isinstance(data.get("following"), int) else None
+    videos    = data.get("videos")    if isinstance(data.get("videos"), int)    else None
+    created_unix = data.get("account_created_unix")
+    age_days = None
+    if isinstance(created_unix, (int, float)) and created_unix > 0:
+        try:
+            age_days = (datetime.now(UTC) - datetime.fromtimestamp(int(created_unix), UTC)).days
+        except Exception:
+            age_days = None
+
+    # Bought / farmed signals.
+    if videos is not None and followers is not None:
+        if videos == 0 and followers >= 10_000:
+            flags.append(("warn",
+                f"0 videos but {followers:,} followers — possibly bought or farmed"))
+        elif videos is not None and 0 < videos < 5 and followers >= 100_000:
+            flags.append(("warn",
+                f"only {videos} videos but {followers:,} followers — unusual ratio"))
+
+    # Rapid-growth signal.
+    if age_days is not None and followers is not None:
+        if age_days < 180 and followers >= 100_000:
+            flags.append(("warn",
+                f"account is only {age_days} days old but has {followers:,} followers — rapid growth"))
+
+    # Follow-farm pattern.
+    if following is not None and followers is not None and following > 0:
+        if following >= 1000 and following > max(followers, 1) * 3:
+            flags.append(("info",
+                f"follows {following:,} but only {followers:,} followers — follow-back farm pattern"))
+
+    # Handle / nickname change signals (the data is already in the page JSON).
+    now = datetime.now(UTC).timestamp()
+    uid_mod = data.get("unique_id_modify_time")
+    if isinstance(uid_mod, (int, float)) and uid_mod > 0:
+        days_since = int((now - uid_mod) / 86400)
+        if days_since < 90 and age_days is not None and age_days > 730:
+            yrs = age_days // 365
+            flags.append(("warn",
+                f"handle changed {days_since} days ago on a {yrs}-year-old account — possible rebrand, sale, or takeover"))
+
+    nick_mod = data.get("nick_name_modify_time")
+    if isinstance(nick_mod, (int, float)) and nick_mod > 0:
+        days_since = int((now - nick_mod) / 86400)
+        if days_since < 30:
+            flags.append(("info", f"display name changed {days_since} days ago"))
+
+    if not flags:
+        flags.append(("ok", "no anomalies surfaced by current heuristics"))
+    return flags
+
+
+def print_pivots_plain(data):
+    """Plain-text rendering of pivot links for CLI mode."""
+    pivots = osint_pivots(data)
+    if not pivots:
+        return
+    print(Fore.CYAN + "    🧭 OSINT pivots")
+    for label, url in pivots:
+        print(f"       · {label}: {url}")
+
+
+def print_flags_plain(data):
+    """Plain-text rendering of integrity flags for CLI mode."""
+    flags = integrity_flags(data)
+    if not flags:
+        return
+    print(Fore.CYAN + "    🚩 Integrity flags")
+    icon = {"warn": "⚠️ ", "info": "ℹ️ ", "ok": "✅"}
+    for sev, msg in flags:
+        print(f"       {icon.get(sev, '·')} {msg}")
 
 
 # ------------------------------------------------------------------ reports
@@ -247,20 +384,25 @@ def show(data, indent="    "):
         print(Fore.GREEN + f"{indent}📅 decoded: {data['decoded']}")
 
 
-def run_batch(targets, session):
+def run_batch(targets, session, show_osint=False, show_flags=False):
     print(Fore.CYAN + f"\n[+] Targets: {len(targets)}  (free mode — no API key)\n")
     results = []
     for i, target in enumerate(targets, 1):
         print(Fore.WHITE + f"[{i}/{len(targets)}] {target}")
         kind, data = lookup(target, session)
         show(data)
+        if data.get("type") == "account":
+            if show_flags:
+                print_flags_plain(data)
+            if show_osint:
+                print_pivots_plain(data)
         results.append({"target": target, "data": data})
         if kind == "user" and i < len(targets):
             time.sleep(DELAY)
     return results
 
 
-def run_interactive(session):
+def run_interactive(session, show_osint=False, show_flags=False):
     print(Fore.CYAN + "\n🔎 TikTok creation-date lookup  (free — no API key)")
     print(Fore.WHITE + "   Type a username, @handle, or profile/video URL.")
     print(Fore.WHITE + "   Press Enter on an empty line (or type 'q') to quit.\n")
@@ -275,6 +417,11 @@ def run_interactive(session):
             break
         _, data = lookup(entry, session)
         show(data, indent="   ")
+        if data.get("type") == "account":
+            if show_flags:
+                print_flags_plain(data)
+            if show_osint:
+                print_pivots_plain(data)
         results.append({"target": entry, "data": data})
     return results
 
@@ -287,7 +434,15 @@ def main():
                    help="one or more usernames / @handles / profile or video URLs")
     p.add_argument("--input", help="a single target (same as a positional arg)")
     p.add_argument("--file", help="text file with one target per line")
+    p.add_argument("--osint", action="store_true",
+                   help="also print OSINT pivot links (reverse image search, Wayback, cross-platform handles, bio link)")
+    p.add_argument("--flags", action="store_true",
+                   help="also print integrity heuristics (bought-followers / takeover / rebrand signals)")
+    p.add_argument("--all", action="store_true",
+                   help="shorthand for --osint --flags")
     args = p.parse_args()
+    if args.all:
+        args.osint = args.flags = True
 
     # Command-line targets: zsh (unlike bash) does NOT strip inline '# comments',
     # so a '#' token arrives as a literal arg. Treat it as start-of-comment and
@@ -317,10 +472,12 @@ def main():
     session = new_session()
 
     if targets:
-        results = run_batch(targets, session)
+        results = run_batch(targets, session,
+                            show_osint=args.osint, show_flags=args.flags)
         prefix = "single" if len(targets) == 1 else "batch"
     else:
-        results = run_interactive(session)
+        results = run_interactive(session,
+                                  show_osint=args.osint, show_flags=args.flags)
         prefix = "interactive"
 
     if results:
