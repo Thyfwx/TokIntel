@@ -92,10 +92,19 @@ def fetch_user(username, session):
     # but percent-encodes anything unusual, so a crafted target can't alter the
     # request structure. The host and scheme are already a fixed literal prefix.
     url = f"https://www.tiktok.com/@{quote(username, safe='')}"
-    r = session.get(url, timeout=TIMEOUT)
-    m = REHYDRATION_RE.search(r.text)
+
+    # One brief retry on the "TikTok served a stub" case — usually a soft throttle
+    # that clears in a couple of seconds. Avoids the user seeing a scary technical
+    # error for what is really just "wait a moment."
+    for attempt in (1, 2):
+        r = session.get(url, timeout=TIMEOUT)
+        m = REHYDRATION_RE.search(r.text)
+        if m:
+            break
+        if attempt == 1:
+            time.sleep(2.5)
     if not m:
-        return {"error": f"no_data (http_{r.status_code}, {len(r.text)}B) — rate-limited/blocked or layout changed"}
+        return {"error": "TikTok throttled this lookup — wait a moment, then try again."}
     try:
         scope = json.loads(m.group(1)).get("__DEFAULT_SCOPE__", {})
     except ValueError:
@@ -283,14 +292,54 @@ def integrity_flags(data):
     return flags
 
 
-def print_pivots_plain(data):
-    """Plain-text rendering of pivot links for CLI mode."""
+def save_avatar(data, session=None):
+    """Download the profile picture to reports/avatars/{username}.jpg and return
+    the local path. TikTok's signed avatar URLs expire in a few months, so this
+    gives the user a lasting copy they can drop into any reverse-image search.
+    Returns None on failure (best-effort, never raises)."""
+    if not isinstance(data, dict) or data.get("type") != "account":
+        return None
+    url = data.get("avatar")
+    username = data.get("username")
+    if not url or not username:
+        return None
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", username)[:64]
+    folder = os.path.join(reports_dir(), "avatars")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{safe_name}.jpg")
+    try:
+        sess = session or new_session()
+        r = sess.get(url, timeout=TIMEOUT)
+        if r.status_code == 200 and r.content:
+            with open(path, "wb") as f:
+                f.write(r.content)
+            return path
+    except Exception:
+        return None
+    return None
+
+
+def print_pivots_plain(data, session=None):
+    """Plain-text rendering of pivot links for CLI mode.
+    Splits short clickable links from the long reverse-image-search URLs, so the
+    terminal stays readable. Also saves the avatar locally (URLs expire)."""
     pivots = osint_pivots(data)
     if not pivots:
         return
     print(Fore.CYAN + "    🧭 OSINT pivots")
+    short, long = [], []
     for label, url in pivots:
+        (long if len(url) > 200 else short).append((label, url))
+    for label, url in short:
         print(f"       · {label}: {url}")
+    if long:
+        print(Fore.CYAN + "    🖼  Reverse-image search (long signed URLs — click/copy)")
+        for label, url in long:
+            print(f"       · {label}")
+            print(f"           {url}")
+    saved = save_avatar(data, session=session)
+    if saved:
+        print(Fore.CYAN + f"    💾 avatar saved → {saved}")
 
 
 def print_flags_plain(data):
@@ -395,7 +444,7 @@ def run_batch(targets, session, show_osint=False, show_flags=False):
             if show_flags:
                 print_flags_plain(data)
             if show_osint:
-                print_pivots_plain(data)
+                print_pivots_plain(data, session=session)
         results.append({"target": target, "data": data})
         if kind == "user" and i < len(targets):
             time.sleep(DELAY)
@@ -421,7 +470,7 @@ def run_interactive(session, show_osint=False, show_flags=False):
             if show_flags:
                 print_flags_plain(data)
             if show_osint:
-                print_pivots_plain(data)
+                print_pivots_plain(data, session=session)
         results.append({"target": entry, "data": data})
     return results
 

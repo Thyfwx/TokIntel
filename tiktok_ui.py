@@ -26,6 +26,7 @@ from rich import box
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
+    save_avatar,
 )
 
 console = Console()
@@ -124,11 +125,23 @@ def render_pivots(data):
     if not pivots:
         console.print("[dim]   no pivots available for this result[/]")
         return
+    short, long = [], []
+    for label, url in pivots:
+        (long if len(url) > 200 else short).append((label, url))
+
     tbl = Table.grid(padding=(0, 2))
     tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)
     tbl.add_column(style="white", overflow="fold")
-    for label, url in pivots:
+    for label, url in short:
         tbl.add_row(label, f"[link={url}]{url}[/link]")
+    # Long signed-URL pivots get short clickable labels so the panel stays clean.
+    for label, url in long:
+        tbl.add_row(label, f"[link={url}]→ open in browser[/link]")
+
+    saved = save_avatar(data)
+    if saved:
+        tbl.add_row("avatar saved", f"[green]{saved}[/]")
+
     console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
 
