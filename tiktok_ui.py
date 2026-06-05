@@ -134,13 +134,15 @@ def render_pivots(data):
     tbl.add_column(style="white", overflow="fold")
     for label, url in short:
         tbl.add_row(label, f"[link={url}]{url}[/link]")
-    # Long signed-URL pivots get short clickable labels so the panel stays clean.
+    # Long signed-URL pivots: show the FULL URL so it's both clickable AND
+    # copyable. Terminal.app needs Cmd-click to fire embedded links.
     for label, url in long:
-        tbl.add_row(label, f"[link={url}]→ open in browser[/link]")
+        tbl.add_row(label, f"[link={url}]{url}[/link]")
 
     saved = save_avatar(data)
     if saved:
         tbl.add_row("avatar saved", f"[green]{saved}[/]")
+    tbl.add_row("[dim]hint[/]", "[dim]Cmd-click any link to open in browser[/]")
 
     console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))

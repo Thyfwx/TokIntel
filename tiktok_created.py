@@ -171,7 +171,9 @@ def decode_video(video_id):
         "type": "video",
         "video_id": video_id,
         "uploaded": fmt(ts) if ts else None,
-        "note": "This is the VIDEO upload time, not the account creation date.",
+        "note": ("This is when the video was posted. TikTok bakes the upload "
+                 "time into the video ID itself, so no fetch was needed. For "
+                 "the account's creation date, type the @username."),
     }
 
 
@@ -181,9 +183,10 @@ def decode_id(num):
         "type": "raw_id",
         "id": num,
         "decoded": fmt(ts) if ts else None,
-        "note": ("Decoded from snowflake id>>32. Works for video IDs and "
-                 "snowflake user IDs; small/legacy user IDs can't be decoded "
-                 "this way — fetch the @username instead for createTime."),
+        "note": ("Read straight from the ID number — TikTok bakes the post "
+                 "time into video IDs. For an account's creation date, type "
+                 "its @username instead (user IDs are too small to hold a "
+                 "timestamp)."),
     }
 
 
@@ -319,24 +322,33 @@ def save_avatar(data, session=None):
     return None
 
 
+def _osc8(url, text=None):
+    """Wrap a URL with OSC 8 escape codes so modern terminals (Terminal.app,
+    iTerm2, kitty, Warp, GNOME, WezTerm) render it as a clickable hyperlink.
+    Old/unsupported terminals strip the escapes and just show `text`."""
+    text = text or url
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
 def print_pivots_plain(data, session=None):
     """Plain-text rendering of pivot links for CLI mode.
     Splits short clickable links from the long reverse-image-search URLs, so the
-    terminal stays readable. Also saves the avatar locally (URLs expire)."""
+    terminal stays readable. Also saves the avatar locally (URLs expire).
+    URLs are wrapped with OSC 8 so they're clickable in modern terminals."""
     pivots = osint_pivots(data)
     if not pivots:
         return
-    print(Fore.CYAN + "    🧭 OSINT pivots")
+    print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(Cmd-click any link to open)")
     short, long = [], []
     for label, url in pivots:
         (long if len(url) > 200 else short).append((label, url))
     for label, url in short:
-        print(f"       · {label}: {url}")
+        print(f"       · {label}: {_osc8(url)}")
     if long:
-        print(Fore.CYAN + "    🖼  Reverse-image search (long signed URLs — click/copy)")
+        print(Fore.CYAN + "    🖼  Reverse-image search (long URLs — Cmd-click or copy)")
         for label, url in long:
             print(f"       · {label}")
-            print(f"           {url}")
+            print(f"           {_osc8(url)}")
     saved = save_avatar(data, session=session)
     if saved:
         print(Fore.CYAN + f"    💾 avatar saved → {saved}")
