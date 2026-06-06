@@ -21,6 +21,7 @@ Hack Underway. This account-lookup addition (no API key needed) was contributed
 by @Thyfwx.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -248,6 +249,49 @@ def osint_pivots(data):
     return pivots
 
 
+# Only YouTube reliably 404s for nonexistent usernames. Reddit / Instagram /
+# X / Twitch all serve JS-routed SPAs that return HTTP 200 with a "no such
+# user" page rendered client-side, so the HTTP status carries no useful signal.
+# Rather than print misleading ✓ marks, we don't probe them at all and let the
+# user click through to verify by eye. This was checked empirically:
+#   curl twitch.tv/zzz_fake     -> 200   (200 for real too)
+#   curl reddit.com/user/zzz    -> 200   (200 for real too)
+#   curl instagram.com/zzz/     -> 200   (200 for real too)
+#   curl x.com/zzz              -> 403   (403 for real too — UA-blocked)
+#   curl youtube.com/@zzz       -> 404   (200 for real)  <-- only reliable one
+_PROBE_LABELS = {"YouTube"}
+
+
+def probe_pivots(pivots, session=None):
+    """HEAD-check pivot URLs whose platforms reliably distinguish real vs
+    fake usernames via HTTP status. Currently that is only YouTube — see the
+    comment on _PROBE_LABELS. Returns 3-tuples (label, url, status):
+      'exists'  — 200 (account is there)
+      'missing' — 404 (definitive no)
+      'unknown' — anything else (timeout, 5xx, etc.)
+      None      — not a probed platform; just show the URL."""
+    sess = session or new_session()
+
+    def check(item):
+        label, url = item
+        if label not in _PROBE_LABELS:
+            return (label, url, None)
+        try:
+            r = sess.head(url, timeout=5, allow_redirects=True)
+            if r.status_code == 200:
+                return (label, url, "exists")
+            if r.status_code == 404:
+                return (label, url, "missing")
+            return (label, url, "unknown")
+        except Exception:
+            return (label, url, "unknown")
+
+    if not any(label in _PROBE_LABELS for label, _ in pivots):
+        return [(label, url, None) for label, url in pivots]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        return list(ex.map(check, pivots))
+
+
 def integrity_flags(data):
     """
     Heuristic flags spotted purely from the data we already pulled. Returns a
@@ -329,8 +373,14 @@ def save_avatar(data, session=None):
     path = os.path.join(folder, f"{safe_name}.jpg")
     try:
         sess = session or new_session()
-        r = sess.get(url, timeout=TIMEOUT)
-        if r.status_code == 200 and r.content:
+        # No redirects: the avatar URL from TikTok's JSON should serve the image
+        # directly. A 30x to somewhere else would be suspicious, so refuse it.
+        r = sess.get(url, timeout=TIMEOUT, allow_redirects=False)
+        # Verify the bytes are actually a JPEG (FFD8FF magic). If TikTok ever
+        # returns an HTML error page or some other content, we don't want to
+        # write it as if it were an image — and we don't want to silently save
+        # whatever a hostile redirect or response might have substituted.
+        if r.status_code == 200 and r.content[:3] == b"\xff\xd8\xff":
             with open(path, "wb") as f:
                 f.write(r.content)
             return path
@@ -357,23 +407,32 @@ def _osc8(url, text=None):
     return f"\033]8;;{safe_url}\033\\{safe_text}\033]8;;\033\\"
 
 
+_STATUS_ICON = {"exists": "✓", "missing": "✗", "unknown": "?"}
+
+
 def print_pivots_plain(data, session=None):
     """Plain-text rendering of pivot links for CLI mode.
     Splits short clickable links from the long reverse-image-search URLs, so the
     terminal stays readable. Also saves the avatar locally (URLs expire).
-    URLs are wrapped with OSC 8 so they're clickable in modern terminals."""
+    URLs are wrapped with OSC 8 so they're clickable in modern terminals.
+    Cross-platform username probes are HEAD-checked first, so each link is
+    marked with ✓ (200), ✗ (404), or ? (other)."""
     pivots = osint_pivots(data)
     if not pivots:
         return
-    print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(Cmd-click any link to open)")
+    print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking platforms…)")
+    probed = probe_pivots(pivots, session=session)
+
     short, long = [], []
-    for label, url in pivots:
-        (long if len(url) > 200 else short).append((label, url))
-    for label, url in short:
-        print(f"       · {label}: {_osc8(url)}")
+    for label, url, status in probed:
+        (long if len(url) > 200 else short).append((label, url, status))
+
+    for label, url, status in short:
+        mark = _STATUS_ICON.get(status, " ")
+        print(f"       {mark} {label}: {_osc8(url)}")
     if long:
         print(Fore.CYAN + "    🖼  Reverse-image search (long URLs — Cmd-click or copy)")
-        for label, url in long:
+        for label, url, _ in long:
             print(f"       · {label}")
             print(f"           {_osc8(url)}")
     saved = save_avatar(data, session=session)
@@ -541,12 +600,23 @@ def main():
             break
         cli.append(t)
 
-    # File targets: skip blank lines and whole-line '#' comments.
+    # File targets: skip blank lines and whole-line '#' comments. Fail with a
+    # friendly message (not a Python traceback) if the path is wrong or sealed.
     file_lines = []
     if args.file:
-        with open(args.file, encoding="utf-8") as f:
-            file_lines = [ln.strip() for ln in f
-                          if ln.strip() and not ln.strip().startswith("#")]
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                file_lines = [ln.strip() for ln in f
+                              if ln.strip() and not ln.strip().startswith("#")]
+        except FileNotFoundError:
+            print(Fore.RED + f"❌ Could not open file: {args.file} (no such file)")
+            return
+        except PermissionError:
+            print(Fore.RED + f"❌ Could not open file: {args.file} (permission denied)")
+            return
+        except OSError as e:
+            print(Fore.RED + f"❌ Could not open file: {args.file} ({e})")
+            return
 
     # de-dupe in order, drop blanks
     seen, targets = set(), []

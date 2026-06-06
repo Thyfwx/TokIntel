@@ -26,7 +26,7 @@ from rich import box
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    save_avatar,
+    save_avatar, probe_pivots,
 )
 
 console = Console()
@@ -120,29 +120,44 @@ def render(data):
         render_simple("id decode", f"📅  {data.get('decoded')}", note=data.get("note"))
 
 
+_STATUS_BADGE = {
+    "exists":  "[green]✓[/]",
+    "missing": "[red]✗[/]",
+    "unknown": "[yellow]?[/]",
+    None:      " ",
+}
+
+
 def render_pivots(data):
     pivots = osint_pivots(data)
     if not pivots:
         console.print("[dim]   no pivots available for this result[/]")
         return
+
+    # HEAD-check the cross-platform probes in parallel; total wait ≈ 1s.
+    with console.status("[cyan]checking platforms…[/]", spinner="dots"):
+        probed = probe_pivots(pivots)
+
     short, long = [], []
-    for label, url in pivots:
-        (long if len(url) > 200 else short).append((label, url))
+    for label, url, status in probed:
+        (long if len(url) > 200 else short).append((label, url, status))
 
     tbl = Table.grid(padding=(0, 2))
+    tbl.add_column(justify="center", style="white", no_wrap=True, width=2)
     tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)
     tbl.add_column(style="white", overflow="fold")
-    for label, url in short:
-        tbl.add_row(label, f"[link={url}]{url}[/link]")
+    for label, url, status in short:
+        tbl.add_row(_STATUS_BADGE[status], label, f"[link={url}]{url}[/link]")
     # Long signed-URL pivots: show the FULL URL so it's both clickable AND
     # copyable. Terminal.app needs Cmd-click to fire embedded links.
-    for label, url in long:
-        tbl.add_row(label, f"[link={url}]{url}[/link]")
+    for label, url, _ in long:
+        tbl.add_row(" ", label, f"[link={url}]{url}[/link]")
 
     saved = save_avatar(data)
     if saved:
-        tbl.add_row("avatar saved", f"[green]{saved}[/]")
-    tbl.add_row("[dim]hint[/]", "[dim]Cmd-click any link to open in browser[/]")
+        tbl.add_row(" ", "avatar saved", f"[green]{saved}[/]")
+    tbl.add_row(" ", "[dim]hint[/]",
+                "[dim]✓/✗ = YouTube only (others can't be reliably probed) · Cmd-click any link[/]")
 
     console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
