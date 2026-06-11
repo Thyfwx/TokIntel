@@ -11,10 +11,10 @@ timestamp baked into video IDs (id >> 32). (Note: many *user* IDs are NOT
 snowflakes, so we trust the embedded createTime for accounts, not id>>32.)
 
 Usage:
-  ./venv/bin/python tiktok_created.py --input charlidamelio
-  ./venv/bin/python tiktok_created.py --input https://www.tiktok.com/@nasa
-  ./venv/bin/python tiktok_created.py --input https://www.tiktok.com/@x/video/7076288989640055298
-  ./venv/bin/python tiktok_created.py --file usernames.txt
+  python3 tiktok_created.py charlidamelio
+  python3 tiktok_created.py @nasa https://www.tiktok.com/@zachking
+  python3 tiktok_created.py charlidamelio --all      # add OSINT pivots + flags
+  python3 tiktok_created.py --file usernames.txt
 
 Part of TokIntel (https://github.com/HackUnderway/TokIntel) by Victor Bancayan /
 Hack Underway. This account-lookup addition (no API key needed) was contributed
@@ -22,6 +22,7 @@ by @Thyfwx.
 """
 import argparse
 import concurrent.futures
+import ipaddress
 import json
 import os
 import re
@@ -29,7 +30,7 @@ import random
 import string
 import time
 from datetime import datetime, UTC
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -76,10 +77,31 @@ def human_age(created_unix):
     if days < 31:
         n, unit = days, "day"
     elif days < 365:
-        n, unit = days // 30, "month"
+        # Cap months at 11 so a 360-364 day account reads "11 months", never
+        # "12 months ago" one day before it rolls over to "1 year ago".
+        n, unit = min(days // 30, 11), "month"
     else:
         n, unit = days // 365, "year"
     return f"{n} {unit}{'s' if n != 1 else ''} ago"
+
+
+# ASCII control bytes (0x00-0x1f and 0x7f). Any untrusted profile text
+# (nickname, bio, region, the resolved username) is stripped of these before it
+# is printed, written to a report, or wrapped in a terminal escape, so a hostile
+# account can't smuggle OSC/CSI sequences (e.g. an OSC 52 clipboard write) into
+# the investigator's terminal or saved report. The Rich UI escapes markup on top
+# of this; the CLI and the report writer rely on it directly.
+_CTRL_BYTES = {**{i: None for i in range(0x20)}, 0x7f: None}
+
+
+def _clean(value):
+    """Strip control bytes from an untrusted string field (passthrough None / non-str)."""
+    return value.translate(_CTRL_BYTES) if isinstance(value, str) else value
+
+
+def _count(x):
+    """Comma-group an integer count for display; '—' for missing, str otherwise."""
+    return f"{x:,}" if isinstance(x, int) else ("—" if x in (None, "") else str(x))
 
 
 def classify(value):
@@ -98,7 +120,10 @@ def classify(value):
         return "user", v.lstrip('@')
 
     if v.isdigit():
-        return "id", v
+        # A bare number is ambiguous: a video/snowflake ID, or an all-digit
+        # username (TikTok allows those). If it's too small to be a real video
+        # snowflake, treat it as a username so all-digit handles stay reachable.
+        return ("id", v) if decode_snowflake(v) is not None else ("user", v)
 
     return "user", v.lstrip('@')
 
@@ -205,14 +230,18 @@ def fetch_user(username, session):
     bio_link = raw_bio_link.get("link") if isinstance(raw_bio_link, dict) else (
         raw_bio_link if isinstance(raw_bio_link, str) else None)
     # TikTok stores some bio links without a scheme (e.g. "linktr.ee/tiktok"),
-    # which then isn't clickable. Prepend https:// so the link actually works.
-    if bio_link and "://" not in bio_link:
-        bio_link = "https://" + bio_link
+    # which then isn't clickable. Add https:// only when there's truly no scheme,
+    # so we don't mangle "mailto:"/"tel:" or protocol-relative "//host".
+    if bio_link:
+        if bio_link.startswith("//"):
+            bio_link = "https:" + bio_link
+        elif not re.match(r"(?i)^[a-z][a-z0-9+.\-]*:", bio_link):
+            bio_link = "https://" + bio_link
 
     return {
         "type": "account",
-        "username": user.get("uniqueId") or username,
-        "nickname": user.get("nickname"),
+        "username": _clean(user.get("uniqueId") or username),
+        "nickname": _clean(user.get("nickname")),
         "account_created": fmt(ct) if ct else None,
         "account_created_unix": ct,
         "created_estimate_from_id": fmt(id_est) if id_est else None,
@@ -220,9 +249,9 @@ def fetch_user(username, session):
         "sec_uid": user.get("secUid"),
         "verified": user.get("verified"),
         "private": user.get("privateAccount"),
-        "bio": user.get("signature"),
+        "bio": _clean(user.get("signature")),
         "bio_link": bio_link,
-        "region": user.get("region"),
+        "region": _clean(user.get("region")),
         "avatar": user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb"),
         "unique_id_modify_time": user.get("uniqueIdModifyTime"),
         "nick_name_modify_time": user.get("nickNameModifyTime"),
@@ -409,6 +438,26 @@ def integrity_flags(data):
     return flags
 
 
+def _avatar_url_ok(url):
+    """Avatar URLs should be https TikTok-CDN links. Reject non-https and any
+    host that is a private / loopback / link-local IP literal, so a hostile
+    profile can't turn this best-effort fetch into an SSRF probe of the user's
+    own network or a cloud-metadata endpoint (the GET fires before the redirect
+    and JPEG checks, so the host must be vetted up front)."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if p.scheme != "https" or not p.hostname:
+        return False
+    try:
+        ip = ipaddress.ip_address(p.hostname)
+    except ValueError:
+        return True   # a hostname, not an IP literal — allowed (TikTok CDN)
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
 def save_avatar(data, session=None):
     """Download the profile picture to reports/avatars/{username}.jpg and return
     the local path. TikTok's signed avatar URLs expire in a few months, so this
@@ -418,7 +467,7 @@ def save_avatar(data, session=None):
         return None
     url = data.get("avatar")
     username = data.get("username")
-    if not url or not username:
+    if not url or not username or not _avatar_url_ok(url):
         return None
     safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", username)[:64]
     folder = os.path.join(reports_dir(), "avatars")
@@ -440,9 +489,6 @@ def save_avatar(data, session=None):
     except Exception:
         return None
     return None
-
-
-_CTRL_BYTES = {**{i: None for i in range(0x20)}, 0x7f: None}
 
 
 def _osc8(url, text=None):
@@ -533,9 +579,9 @@ def save_reports(results, prefix):
                 f.write(f"  Nickname       : {d.get('nickname')}\n")
                 f.write(f"  Verified       : {d.get('verified')}\n")
                 f.write(f"  Private        : {d.get('private')}\n")
-                f.write(f"  Followers      : {d.get('followers')}\n")
-                f.write(f"  Likes          : {d.get('likes')}\n")
-                f.write(f"  Videos         : {d.get('videos')}\n")
+                f.write(f"  Followers      : {_count(d.get('followers'))}\n")
+                f.write(f"  Likes          : {_count(d.get('likes'))}\n")
+                f.write(f"  Videos         : {_count(d.get('videos'))}\n")
                 f.write(f"  Bio            : {d.get('bio')}\n")
                 f.write(f"  User ID        : {d.get('user_id')}\n")
             elif d.get("type") == "video":
@@ -576,7 +622,7 @@ def show(data, indent="    "):
             age = human_age(data.get("account_created_unix"))
             age_str = f" · {age}" if age else ""
             print(Fore.GREEN + f"{indent}📅 created: {data['account_created']}{age_str}  "
-                  + Fore.WHITE + f"(@{data['username']}, {data.get('followers')} followers)")
+                  + Fore.WHITE + f"(@{data['username']}, {_count(data.get('followers'))} followers)")
         else:
             est = data.get('created_estimate_from_id')
             if est:
