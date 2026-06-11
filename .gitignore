@@ -16,3 +16,7 @@ reports/
 
 # macOS Finder metadata
 .DS_Store
+
+# Godot import sidecars (appear if this folder is ever opened inside a Godot project)
+*.import
+.godot/

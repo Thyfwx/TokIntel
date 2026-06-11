@@ -20,13 +20,15 @@ from rich.table import Table
 from rich.text import Text
 from rich.align import Align
 from rich.prompt import Prompt
+from rich.markup import escape
+from rich.style import Style
 from rich import box
 
 # Reuse the validated lookup engine living next to this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    save_avatar, probe_pivots,
+    save_avatar, probe_pivots, human_age,
 )
 
 console = Console()
@@ -45,6 +47,28 @@ TT_LOGO = [
 
 def num(x):
     return f"{x:,}" if isinstance(x, int) else ("—" if x in (None, "") else str(x))
+
+
+# The looked-up account is the potentially hostile party in an OSINT tool, so
+# its profile text is untrusted. Rich interprets [..] markup in plain strings,
+# which would let a crafted nickname / bio / link inject styling, a spoofed
+# clickable [link=...], or terminal escapes (e.g. an OSC 52 clipboard write).
+# These mirror the CLI's _osc8 / _CTRL_BYTES defense for the Rich UI.
+_CTRL_BYTES = {**{i: None for i in range(0x20)}, 0x7f: None}
+
+
+def _safe(value):
+    """Untrusted profile text rendered literally: strip control bytes, then
+    escape Rich markup so brackets show as text instead of being interpreted."""
+    return escape(str(value).translate(_CTRL_BYTES))
+
+
+def _safe_link(url):
+    """A clickable URL cell built as a styled Text (not markup), so a hostile
+    bio link or avatar URL can't break out of [link=...] or smuggle terminal
+    escapes. The link target is set via a Style object, never string-parsed."""
+    clean = str(url).translate(_CTRL_BYTES)
+    return Text(clean, style=Style(link=clean))
 
 
 def header():
@@ -73,11 +97,12 @@ def header():
 
 def render_account(d):
     created = d.get("account_created") or "unknown"
+    age = human_age(d.get("account_created_unix"))
     tbl = Table.grid(padding=(0, 2))
     tbl.add_column(justify="right", style="cyan", no_wrap=True)
     tbl.add_column(style="white")
     if d.get("nickname"):
-        tbl.add_row("Name", str(d["nickname"]))
+        tbl.add_row("Name", _safe(d["nickname"]))
     tbl.add_row("Verified", "✅ yes" if d.get("verified") else "no")
     tbl.add_row("Private", "🔒 yes" if d.get("private") else "no")
     tbl.add_row("Followers", num(d.get("followers")))
@@ -85,18 +110,18 @@ def render_account(d):
     tbl.add_row("Likes", num(d.get("likes")))
     tbl.add_row("Videos", num(d.get("videos")))
     if d.get("region"):
-        tbl.add_row("Region", str(d["region"]))
+        tbl.add_row("Region", _safe(d["region"]))
     if d.get("bio"):
-        tbl.add_row("Bio", str(d["bio"]))
+        tbl.add_row("Bio", _safe(d["bio"]))
     tbl.add_row("User ID", str(d.get("user_id")))
 
     body = Group(
         Align.center(Text(f"📅  {created}", style="bold green")),
-        Align.center(Text("account created", style="dim")),
+        Align.center(Text(f"account created · {age}" if age else "account created", style="dim")),
         Text(""),
         tbl,
     )
-    console.print(Panel(body, title=f"[bold magenta]@{d.get('username')}[/]",
+    console.print(Panel(body, title=f"[bold magenta]@{_safe(d.get('username'))}[/]",
                         border_style="green", box=box.ROUNDED, padding=(1, 2)))
 
 
@@ -147,11 +172,11 @@ def render_pivots(data):
     tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)
     tbl.add_column(style="white", overflow="fold")
     for label, url, status in short:
-        tbl.add_row(_STATUS_BADGE[status], label, f"[link={url}]{url}[/link]")
+        tbl.add_row(_STATUS_BADGE[status], label, _safe_link(url))
     # Long signed-URL pivots: show the FULL URL so it's both clickable AND
     # copyable. Terminal.app needs Cmd-click to fire embedded links.
     for label, url, _ in long:
-        tbl.add_row(" ", label, f"[link={url}]{url}[/link]")
+        tbl.add_row(" ", label, _safe_link(url))
 
     saved = save_avatar(data)
     if saved:

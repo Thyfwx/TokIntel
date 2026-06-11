@@ -58,6 +58,30 @@ def fmt(ts):
         return None
 
 
+def human_age(created_unix):
+    """Short 'how long ago' label for a unix timestamp: 'today', '5 days ago',
+    '3 months ago', '7 years ago'. Returns None if the input isn't usable, so
+    callers can simply skip it. Months/years are approximate (30/365 days),
+    which is exactly how people read an 'account age' at a glance."""
+    if not isinstance(created_unix, (int, float)) or created_unix <= 0:
+        return None
+    try:
+        days = (datetime.now(UTC) - datetime.fromtimestamp(int(created_unix), UTC)).days
+    except (ValueError, OverflowError, OSError):
+        return None
+    if days < 0:
+        return None
+    if days == 0:
+        return "today"
+    if days < 31:
+        n, unit = days, "day"
+    elif days < 365:
+        n, unit = days // 30, "month"
+    else:
+        n, unit = days // 365, "year"
+    return f"{n} {unit}{'s' if n != 1 else ''} ago"
+
+
 def classify(value):
     """Return ('video', video_id) | ('user', username) | ('id', number)."""
     v = value.strip()
@@ -79,12 +103,26 @@ def classify(value):
     return "user", v.lstrip('@')
 
 
+# TikTok *video* IDs are snowflakes whose high bits hold the post time in unix
+# seconds, so `id >> 32` recovers it. Many *user* IDs are NOT snowflakes: old
+# accounts use small sequential ids (e.g. 107955), and some newer ids decode to
+# a nonsense ~1970 date. So we only trust a decode that lands in a believable
+# window — the musical.ly/TikTok era through today. Anything outside that we
+# report as unknown rather than printing a confidently wrong date.
+_SNOWFLAKE_MIN_TS = 1_388_534_400   # 2014-01-01 UTC — musical.ly-era floor
+
+
 def decode_snowflake(num):
-    """id >> 32 -> upload/creation unix seconds (only valid for 64-bit snowflakes)."""
-    n = int(num)
-    if n < (1 << 40):     # too small to be a snowflake — would decode to ~1970
+    """id >> 32 -> unix seconds, but only when the result is a believable date.
+    Returns None for non-snowflake ids (which would otherwise decode to ~1970)."""
+    try:
+        n = int(num)
+    except (TypeError, ValueError):
         return None
-    return n >> 32
+    ts = n >> 32
+    if _SNOWFLAKE_MIN_TS <= ts <= datetime.now(UTC).timestamp() + 86_400:
+        return ts
+    return None
 
 
 # ------------------------------------------------------------------ fetchers
@@ -109,8 +147,19 @@ def fetch_user(username, session):
     # One brief retry on the "TikTok served a stub" case — usually a soft throttle
     # that clears in a couple of seconds. Avoids the user seeing a scary technical
     # error for what is really just "wait a moment."
+    m = None
     for attempt in (1, 2):
-        r = session.get(url, timeout=TIMEOUT)
+        try:
+            r = session.get(url, timeout=TIMEOUT)
+        except requests.RequestException:
+            # No internet, DNS failure, connection reset, TLS error, etc. Retry
+            # once for a transient blip, then fail with a plain-English message
+            # rather than letting a raw HTTPSConnectionPool traceback string
+            # reach the user — every other error path here is already friendly.
+            if attempt == 1:
+                time.sleep(2.5)
+                continue
+            return {"error": "Couldn't reach TikTok — check your internet connection, then try again."}
         m = REHYDRATION_RE.search(r.text)
         if m:
             break
@@ -155,6 +204,10 @@ def fetch_user(username, session):
     raw_bio_link = user.get("bioLink")
     bio_link = raw_bio_link.get("link") if isinstance(raw_bio_link, dict) else (
         raw_bio_link if isinstance(raw_bio_link, str) else None)
+    # TikTok stores some bio links without a scheme (e.g. "linktr.ee/tiktok"),
+    # which then isn't clickable. Prepend https:// so the link actually works.
+    if bio_link and "://" not in bio_link:
+        bio_link = "https://" + bio_link
 
     return {
         "type": "account",
@@ -520,11 +573,18 @@ def show(data, indent="    "):
         print(Fore.RED + f"{indent}⚠️  {data['error']}")
     elif data.get("type") == "account":
         if data.get("account_created"):
-            print(Fore.GREEN + f"{indent}📅 created: {data['account_created']}  "
+            age = human_age(data.get("account_created_unix"))
+            age_str = f" · {age}" if age else ""
+            print(Fore.GREEN + f"{indent}📅 created: {data['account_created']}{age_str}  "
                   + Fore.WHITE + f"(@{data['username']}, {data.get('followers')} followers)")
         else:
-            print(Fore.YELLOW + f"{indent}🟡 profile found but no createTime; "
-                  f"id-estimate: {data.get('created_estimate_from_id')}")
+            est = data.get('created_estimate_from_id')
+            if est:
+                print(Fore.YELLOW + f"{indent}🟡 profile found, but TikTok didn't return a creation "
+                      f"date. Best estimate from the user ID: {est}")
+            else:
+                print(Fore.YELLOW + f"{indent}🟡 profile found, but TikTok didn't return a creation "
+                      f"date (and the user ID isn't a decodable timestamp).")
     elif data.get("type") == "video":
         print(Fore.GREEN + f"{indent}📅 uploaded: {data['uploaded']}")
     else:
