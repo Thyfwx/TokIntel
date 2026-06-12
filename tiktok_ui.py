@@ -246,10 +246,7 @@ def main():
     header()
     console.print(
         "  Type a [bold cyan]username[/], @handle, or profile/video URL.\n"
-        "  [dim]e.g.  charlidamelio  ·  @nasa  ·  a tiktok.com/@user or /video/ link[/]\n"
-        f"  [dim]after any result:  [{TIKTOK_CYAN}]1[/] pivots  ·  "
-        f"[{TIKTOK_CYAN}]2[/] flags  ·  [{TIKTOK_CYAN}]3[/] both[/]\n"
-        "  [dim]← → edit your text · ↑ recalls past lookups · quit with q then Enter, or Ctrl-C[/]\n")
+        "  [dim]q or Ctrl-C to quit[/]\n")
 
     session = new_session()
     results = []
@@ -258,7 +255,11 @@ def main():
         # anywhere — the lookup prompt, the fetch, or the extras menu — not just
         # from one exact spot.
         try:
-            entry = Prompt.ask("[bold magenta]🔎 lookup[/]", default="", show_default=False).strip()
+            # Plain prompt (no color codes, no emoji) so readline's cursor math
+            # is exact and ← → editing stays smooth. The styled Rich prompt threw
+            # the cursor off because the emoji is double-width and the ANSI codes
+            # are invisible bytes readline still counted.
+            entry = input("  lookup ▸ ").strip()
             if not entry or entry.lower() in {"q", "quit", "exit"}:
                 break
             with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
@@ -276,7 +277,7 @@ def main():
         console.print(f"\n[dim]Looked up {len(results)} · report saved →[/] {tp}")
     elif results:
         console.print("\n[yellow]Nothing worth saving — every lookup errored. No report written.[/]")
-    console.print("\n[magenta]bye 👁[/]\n")
+    console.print("\n[dim]bye[/]\n")
 
 
 if __name__ == "__main__":
