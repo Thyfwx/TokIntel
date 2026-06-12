@@ -63,12 +63,14 @@ def _safe(value):
     return escape(str(value).translate(_CTRL_BYTES))
 
 
-def _safe_link(url):
-    """A clickable URL cell built as a styled Text (not markup), so a hostile
-    bio link or avatar URL can't break out of [link=...] or smuggle terminal
-    escapes. The link target is set via a Style object, never string-parsed."""
-    clean = str(url).translate(_CTRL_BYTES)
-    return Text(clean, style=Style(link=clean))
+def _safe_link(url, text=None):
+    """A clickable cell built as a styled Text (not markup), so a hostile bio
+    link or avatar URL can't break out of [link=...] or smuggle terminal
+    escapes. Visible text defaults to the URL; pass `text` for a clean label.
+    The link target is set via a Style object, never string-parsed."""
+    clean_url = str(url).translate(_CTRL_BYTES)
+    label = str(text).translate(_CTRL_BYTES) if text is not None else clean_url
+    return Text(label, style=Style(link=clean_url))
 
 
 def header():
@@ -163,26 +165,20 @@ def render_pivots(data):
     with console.status("[cyan]checking platforms…[/]", spinner="dots"):
         probed = probe_pivots(pivots)
 
-    short, long = [], []
-    for label, url, status in probed:
-        (long if len(url) > 200 else short).append((label, url, status))
-
+    # Each pivot is a clean clickable label (the platform / tool name IS the
+    # link), so the panel stays tidy instead of showing wall-of-URL text.
     tbl = Table.grid(padding=(0, 2))
-    tbl.add_column(justify="center", style="white", no_wrap=True, width=2)
-    tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)
-    tbl.add_column(style="white", overflow="fold")
-    for label, url, status in short:
-        tbl.add_row(_STATUS_BADGE[status], label, _safe_link(url))
-    # Long signed-URL pivots: show the FULL URL so it's both clickable AND
-    # copyable. Terminal.app needs Cmd-click to fire embedded links.
-    for label, url, _ in long:
-        tbl.add_row(" ", label, _safe_link(url))
+    tbl.add_column(justify="center", no_wrap=True, width=2)   # ✓ / ✗ badge
+    tbl.add_column(style=TIKTOK_CYAN)                         # clickable label
+    for label, url, status in probed:
+        tbl.add_row(_STATUS_BADGE[status], _safe_link(url, text=label))
 
     saved = save_avatar(data)
     if saved:
-        tbl.add_row(" ", "avatar saved", f"[green]{saved}[/]")
-    tbl.add_row(" ", "[dim]hint[/]",
-                "[dim]✓/✗ = YouTube only (others can't be reliably probed) · Cmd-click any link[/]")
+        tbl.add_row(" ", f"[green]💾 avatar saved → {escape(saved)}[/]")
+    tbl.add_row(" ", "[dim]impostor check: click Google Lens / Yandex / TinEye "
+                     "to find who the avatar really belongs to[/]")
+    tbl.add_row(" ", "[dim]✓ / ✗ = YouTube only · Cmd-click any link[/]")
 
     console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))

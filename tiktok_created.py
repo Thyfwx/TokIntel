@@ -432,6 +432,16 @@ def integrity_flags(data):
         if days_since < 30:
             flags.append(("info", f"display name changed {days_since} days ago"))
 
+    # Empty / placeholder shell. TikTok auto-assigns a "user1234567890" display
+    # name to accounts that never set one, so a default name plus no posts and
+    # no bio is the signature of an unused, throwaway, or bot-staging account.
+    # Requiring all three keeps it conservative: a real lurker usually still
+    # sets a name or a bio, so this won't fire on them.
+    nickname = (data.get("nickname") or "").strip()
+    if re.match(r"^user\d{6,}$", nickname, re.I) and videos == 0 and not data.get("bio"):
+        flags.append(("info",
+            "default display name, no bio, and 0 videos — looks like an empty or placeholder account"))
+
     if not flags:
         flags.append(("ok",
             "Followers, age, handle history, and growth all look normal — no red flags."))
@@ -511,29 +521,23 @@ _STATUS_ICON = {"exists": "✓", "missing": "✗", "unknown": "?"}
 
 def print_pivots_plain(data, session=None):
     """Plain-text rendering of pivot links for CLI mode.
-    Splits short clickable links from the long reverse-image-search URLs, so the
-    terminal stays readable. Also saves the avatar locally (URLs expire).
-    URLs are wrapped with OSC 8 so they're clickable in modern terminals.
-    Cross-platform username probes are HEAD-checked first, so each link is
-    marked with ✓ (200), ✗ (404), or ? (other)."""
+    Each pivot prints as a clean clickable label (OSC 8 hyperlink): the
+    platform / tool name IS the link, so the terminal stays tidy instead of
+    printing wall-of-URL text. Also saves the avatar locally (signed URLs
+    expire). The same-handle probes are HEAD-checked first, so each is marked
+    ✓ (exists), ✗ (missing), or blank (can't be reliably probed — only YouTube
+    can). Cmd-click in Terminal.app; plain-click in iTerm2 / kitty / Warp."""
     pivots = osint_pivots(data)
     if not pivots:
         return
     print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking platforms…)")
     probed = probe_pivots(pivots, session=session)
 
-    short, long = [], []
     for label, url, status in probed:
-        (long if len(url) > 200 else short).append((label, url, status))
-
-    for label, url, status in short:
-        mark = _STATUS_ICON.get(status, " ")
-        print(f"       {mark} {label}: {_osc8(url)}")
-    if long:
-        print(Fore.CYAN + "    🖼  Reverse-image search (long URLs — Cmd-click or copy)")
-        for label, url, _ in long:
-            print(f"       · {label}")
-            print(f"           {_osc8(url)}")
+        mark = _STATUS_ICON.get(status or "", " ")
+        print(f"       {mark} {_osc8(url, text=label)}")
+    print(Fore.WHITE + "       ℹ  impostor check: click Google Lens / Yandex / TinEye "
+                       "to find who the avatar really belongs to")
     saved = save_avatar(data, session=session)
     if saved:
         print(Fore.CYAN + f"    💾 avatar saved → {saved}")
