@@ -1,0 +1,36 @@
+name: security
+
+# Dependency CVE audit + byte-compile check. Runs on every push and PR, plus a
+# weekly sweep so a newly-disclosed CVE in a pinned dependency is caught even
+# without a code change. Complements the repo's GitHub-managed code scanning
+# (CodeQL), Dependabot alerts, and secret scanning.
+#
+# Security note: this workflow consumes no untrusted event input (no issue / PR
+# / commit text reaches any run: step), so there is no workflow-injection vector.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+
+permissions:
+  contents: read           # least privilege: this workflow only reads the code
+
+jobs:
+  audit:
+    name: compile + dependency CVE audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile the sources
+        run: python -m py_compile tiktok_created.py tiktok_ui.py
+
+      - name: Audit pinned dependencies for known CVEs
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r requirements.txt --strict
