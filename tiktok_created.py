@@ -22,7 +22,6 @@ by @Thyfwx.
 """
 import argparse
 import concurrent.futures
-import ipaddress
 import json
 import os
 import re
@@ -34,7 +33,7 @@ try:
 except ImportError:
     readline = None  # Windows without pyreadline; basic input still works
 from datetime import datetime, UTC
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 import requests
 
@@ -295,10 +294,11 @@ def decode_id(num):
 
 # ----------------------------------------------------------- OSINT extras
 def osint_pivots(data):
-    """
-    Return an ordered list of (label, url) pivots for an account result.
-    These are URLs only — no fetches happen here. The user clicks them.
-    """
+    """Return an ordered list of (label, url) pivots for an account result.
+    URLs only, no fetches happen here, the user clicks them. The order groups
+    them: the same handle on other platforms first, then a reverse image search
+    of the avatar (the "who is this really?" / impostor check), then the
+    profile's own bio link."""
     pivots = []
     if not isinstance(data, dict) or data.get("type") != "account":
         return pivots
@@ -307,32 +307,36 @@ def osint_pivots(data):
     avatar = data.get("avatar")
     bio_link = data.get("bio_link")
 
-    if avatar:
-        avq = quote(avatar, safe="")
-        pivots.append(("Yandex Images (best for faces)",
-                       f"https://yandex.com/images/search?rpt=imageview&url={avq}"))
-        pivots.append(("Google Lens",
-                       f"https://lens.google.com/uploadbyurl?url={avq}"))
-        pivots.append(("TinEye",
-                       f"https://tineye.com/search?url={avq}"))
-
     if username:
-        pivots.append(("Wayback Machine (profile history)",
-                       f"https://web.archive.org/web/*/tiktok.com/@{quote(username, safe='')}"))
-        # Same-handle probes on other platforms. Some will 404; that itself is signal.
         pivots.append(("Instagram", f"https://www.instagram.com/{username}/"))
         pivots.append(("X / Twitter", f"https://x.com/{username}"))
         pivots.append(("YouTube", f"https://www.youtube.com/@{username}"))
         pivots.append(("Twitch", f"https://www.twitch.tv/{username}"))
         pivots.append(("Reddit", f"https://www.reddit.com/user/{username}"))
+        pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{quote(username, safe='')}"))
+
+    if avatar:
+        # One reverse-image link is enough for the "who is this?" check, and
+        # Google Lens is the strongest (it tends to name the actual person).
+        avq = quote(avatar, safe="")
+        pivots.append(("Google Lens", f"https://lens.google.com/uploadbyurl?url={avq}"))
 
     if bio_link:
-        pivots.append(("Bio link (from their profile)", bio_link))
-
-    if data.get("avatar"):
-        pivots.append(("Avatar (direct image URL)", data["avatar"]))
+        pivots.append(("Bio link", bio_link))
 
     return pivots
+
+
+# Which section a pivot belongs to, used for the headings in the panel.
+_REVERSE_IMAGE = {"Google Lens"}
+
+
+def _pivot_section(label):
+    if label in _REVERSE_IMAGE:
+        return "who is this?  (reverse image search of the avatar)"
+    if label == "Bio link":
+        return "their own bio link"
+    return "same handle on other platforms"
 
 
 # Only YouTube reliably 404s for nonexistent usernames. Reddit / Instagram /
@@ -452,59 +456,6 @@ def integrity_flags(data):
     return flags
 
 
-def _avatar_url_ok(url):
-    """Avatar URLs should be https TikTok-CDN links. Reject non-https and any
-    host that is a private / loopback / link-local IP literal, so a hostile
-    profile can't turn this best-effort fetch into an SSRF probe of the user's
-    own network or a cloud-metadata endpoint (the GET fires before the redirect
-    and JPEG checks, so the host must be vetted up front)."""
-    try:
-        p = urlparse(url)
-    except Exception:
-        return False
-    if p.scheme != "https" or not p.hostname:
-        return False
-    try:
-        ip = ipaddress.ip_address(p.hostname)
-    except ValueError:
-        return True   # a hostname, not an IP literal — allowed (TikTok CDN)
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
-
-
-def save_avatar(data, session=None):
-    """Download the profile picture to reports/avatars/{username}.jpg and return
-    the local path. TikTok's signed avatar URLs expire in a few months, so this
-    gives the user a lasting copy they can drop into any reverse-image search.
-    Returns None on failure (best-effort, never raises)."""
-    if not isinstance(data, dict) or data.get("type") != "account":
-        return None
-    url = data.get("avatar")
-    username = data.get("username")
-    if not url or not username or not _avatar_url_ok(url):
-        return None
-    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", username)[:64]
-    folder = os.path.join(reports_dir(), "avatars")
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f"{safe_name}.jpg")
-    try:
-        sess = session or new_session()
-        # No redirects: the avatar URL from TikTok's JSON should serve the image
-        # directly. A 30x to somewhere else would be suspicious, so refuse it.
-        r = sess.get(url, timeout=TIMEOUT, allow_redirects=False)
-        # Verify the bytes are actually a JPEG (FFD8FF magic). If TikTok ever
-        # returns an HTML error page or some other content, we don't want to
-        # write it as if it were an image — and we don't want to silently save
-        # whatever a hostile redirect or response might have substituted.
-        if r.status_code == 200 and r.content[:3] == b"\xff\xd8\xff":
-            with open(path, "wb") as f:
-                f.write(r.content)
-            return path
-    except Exception:
-        return None
-    return None
-
-
 def _osc8(url, text=None):
     """Wrap a URL with OSC 8 escape codes so modern terminals (Terminal.app,
     iTerm2, kitty, Warp, GNOME, WezTerm) render it as a clickable hyperlink.
@@ -524,27 +475,25 @@ _STATUS_ICON = {"exists": "✓", "missing": "✗", "unknown": "?"}
 
 
 def print_pivots_plain(data, session=None):
-    """Plain-text rendering of pivot links for CLI mode.
-    Each pivot prints as a clean clickable label (OSC 8 hyperlink): the
-    platform / tool name IS the link, so the terminal stays tidy instead of
-    printing wall-of-URL text. Also saves the avatar locally (signed URLs
-    expire). The same-handle probes are HEAD-checked first, so each is marked
-    ✓ (exists), ✗ (missing), or blank (can't be reliably probed — only YouTube
-    can). Cmd-click in Terminal.app; plain-click in iTerm2 / kitty / Warp."""
+    """Plain-text rendering of pivot links for CLI mode. Prints each pivot as a
+    visible URL grouped by purpose. The URL is wrapped in an OSC 8 hyperlink so
+    modern terminals make it clickable, and it also shows in full so it stays
+    readable and copyable in any terminal. YouTube is marked ✓ / ✗ when its
+    existence can be confirmed; the others can't be probed reliably."""
     pivots = osint_pivots(data)
     if not pivots:
         return
     print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking platforms…)")
     probed = probe_pivots(pivots, session=session)
 
+    section = None
     for label, url, status in probed:
+        sect = _pivot_section(label)
+        if sect != section:
+            section = sect
+            print(Fore.CYAN + f"\n    {sect}")
         mark = _STATUS_ICON.get(status or "", " ")
-        print(f"       {mark} {_osc8(url, text=label)}")
-    print(Fore.WHITE + "       ℹ  impostor check: click Google Lens / Yandex / TinEye "
-                       "to find who the avatar really belongs to")
-    saved = save_avatar(data, session=session)
-    if saved:
-        print(Fore.CYAN + f"    💾 avatar saved → {saved}")
+        print(Fore.WHITE + f"       {mark} {label:<14}{_osc8(url)}")
 
 
 def print_flags_plain(data):

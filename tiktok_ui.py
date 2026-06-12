@@ -33,7 +33,7 @@ from rich import box
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    save_avatar, probe_pivots, human_age,
+    probe_pivots, human_age, _pivot_section,
 )
 
 console = Console()
@@ -170,22 +170,31 @@ def render_pivots(data):
     with console.status("[cyan]checking platforms…[/]", spinner="dots"):
         probed = probe_pivots(pivots)
 
-    # Each pivot is a clean clickable label (the platform / tool name IS the
-    # link), so the panel stays tidy instead of showing wall-of-URL text.
-    tbl = Table.grid(padding=(0, 2))
-    tbl.add_column(justify="center", no_wrap=True, width=2)   # ✓ / ✗ badge
-    tbl.add_column(style=TIKTOK_CYAN)                         # clickable label
+    # Group the pivots under plain headings, and show each as a full, visible
+    # URL. The URL is the clickable link (Cmd-click in Terminal.app), and because
+    # it shows in full it stays readable and copyable in any terminal, even one
+    # that doesn't render terminal hyperlinks.
+    by_section, order = {}, []
     for label, url, status in probed:
-        tbl.add_row(_STATUS_BADGE[status], _safe_link(url, text=label))
+        sect = _pivot_section(label)
+        if sect not in by_section:
+            by_section[sect] = []
+            order.append(sect)
+        by_section[sect].append((label, url, status))
 
-    saved = save_avatar(data)
-    if saved:
-        tbl.add_row(" ", f"[green]💾 avatar saved → {escape(saved)}[/]")
-    tbl.add_row(" ", "[dim]impostor check: click Google Lens / Yandex / TinEye "
-                     "to find who the avatar really belongs to[/]")
-    tbl.add_row(" ", "[dim]✓ / ✗ = YouTube only · Cmd-click any link[/]")
+    blocks = []
+    for sect in order:
+        tbl = Table.grid(padding=(0, 2))
+        tbl.add_column(justify="center", no_wrap=True, width=2)            # ✓ / ✗
+        tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)   # label
+        tbl.add_column(style="white", overflow="fold")                    # visible URL
+        for label, url, status in by_section[sect]:
+            tbl.add_row(_STATUS_BADGE[status], label, _safe_link(url))
+        blocks += [Text(sect, style="dim"), tbl, Text("")]
 
-    console.print(Panel(tbl, title="[bold]🧭 OSINT pivots[/]",
+    console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
+                        subtitle="[dim]click or Cmd-click a link · ✓ = YouTube confirmed[/]",
+                        subtitle_align="left",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
 
 
