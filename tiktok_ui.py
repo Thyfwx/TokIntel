@@ -171,9 +171,9 @@ def render_pivots(data):
         probed = probe_pivots(pivots)
 
     # Group the pivots under plain headings, and show each as a full, visible
-    # URL. The URL is the clickable link (Cmd-click in Terminal.app), and because
-    # it shows in full it stays readable and copyable in any terminal, even one
-    # that doesn't render terminal hyperlinks.
+    # URL. The URL itself is the clickable hyperlink in any terminal that
+    # supports OSC 8 links, and because it shows in full it also stays readable,
+    # copyable, and auto-detectable as a link in terminals that don't.
     by_section, order = {}, []
     for label, url, status in probed:
         sect = _pivot_section(label)
@@ -193,7 +193,7 @@ def render_pivots(data):
         blocks += [Text(sect, style="dim"), tbl, Text("")]
 
     console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
-                        subtitle="[dim]click or Cmd-click a link · ✓ = YouTube confirmed[/]",
+                        subtitle="[dim]click any link to open it · ✓ = YouTube confirmed[/]",
                         subtitle_align="left",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
 
