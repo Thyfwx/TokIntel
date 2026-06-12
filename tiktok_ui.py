@@ -234,7 +234,10 @@ def main():
     header()
     console.print(
         "  Type a [bold cyan]username[/], @handle, or profile/video URL.\n"
-        "  [dim]To quit: empty line, q, Esc, or Ctrl-C.[/]\n")
+        "  [dim]e.g.  charlidamelio  ·  @nasa  ·  a tiktok.com/@user or /video/ link[/]\n"
+        f"  [dim]after any result:  [{TIKTOK_CYAN}]1[/] pivots  ·  "
+        f"[{TIKTOK_CYAN}]2[/] flags  ·  [{TIKTOK_CYAN}]3[/] both[/]\n"
+        "  [dim]quit: empty line, q, Esc, or Ctrl-C.[/]\n")
 
     session = new_session()
     results = []
