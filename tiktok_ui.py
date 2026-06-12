@@ -14,6 +14,11 @@ Hack Underway. This lookup UI (no API key needed) was contributed by @Thyfwx.
 import os
 import sys
 
+try:
+    import readline  # noqa: F401  enables ← → line editing + ↑ history in prompts
+except ImportError:
+    readline = None  # Windows without pyreadline; basic input still works
+
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
@@ -203,23 +208,29 @@ def render_flags(data):
 
 
 def extras_menu(data):
-    """After an account card, offer the user a small numbered menu of extras.
-    Returning to the lookup prompt is always one Enter away — original UX
-    is preserved for anyone who doesn't want the new stuff."""
+    """After an account card, offer a small numbered menu of extras. Returns
+    True if the user asked to quit the whole program (q / quit / exit, or
+    Ctrl-C / Ctrl-D), so the caller can break out. Anything else just skips back
+    to the lookup prompt.
+
+    Note: no strict `choices=` here on purpose. Rich's choice validation keeps
+    re-asking on any input it doesn't recognise, which means 'q' could never get
+    the user out of this menu. That was the trap."""
     if not isinstance(data, dict) or data.get("type") != "account":
-        return
+        return False
     console.print(
         "  [bold]What else?[/]  "
         f"[{TIKTOK_CYAN}]1[/] pivot links  ·  "
         f"[{TIKTOK_CYAN}]2[/] integrity flags  ·  "
         f"[{TIKTOK_CYAN}]3[/] both  ·  "
-        "[dim]Enter to skip[/]"
+        "[dim]Enter to skip · q to quit[/]"
     )
     try:
-        choice = Prompt.ask("[dim]  choose[/]", choices=["", "1", "2", "3"],
-                            default="", show_default=False, show_choices=False).strip()
+        choice = Prompt.ask("[dim]  choose[/]", default="", show_default=False).strip().lower()
     except (EOFError, KeyboardInterrupt):
-        return
+        return True
+    if choice in {"q", "quit", "exit"}:
+        return True
     if choice == "1":
         render_pivots(data)
     elif choice == "2":
@@ -227,6 +238,7 @@ def extras_menu(data):
     elif choice == "3":
         render_flags(data)
         render_pivots(data)
+    return False
 
 
 def main():
@@ -237,23 +249,26 @@ def main():
         "  [dim]e.g.  charlidamelio  ·  @nasa  ·  a tiktok.com/@user or /video/ link[/]\n"
         f"  [dim]after any result:  [{TIKTOK_CYAN}]1[/] pivots  ·  "
         f"[{TIKTOK_CYAN}]2[/] flags  ·  [{TIKTOK_CYAN}]3[/] both[/]\n"
-        "  [dim]quit: empty line, q, Esc, or Ctrl-C.[/]\n")
+        "  [dim]← → edit your text · ↑ recalls past lookups · quit with q then Enter, or Ctrl-C[/]\n")
 
     session = new_session()
     results = []
     while True:
+        # One try/except around the whole turn, so Ctrl-C or Ctrl-D quits from
+        # anywhere — the lookup prompt, the fetch, or the extras menu — not just
+        # from one exact spot.
         try:
             entry = Prompt.ask("[bold magenta]🔎 lookup[/]", default="", show_default=False).strip()
+            if not entry or entry.lower() in {"q", "quit", "exit"}:
+                break
+            with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
+                _, data = lookup(entry, session)
+            render(data)
+            if extras_menu(data):        # True means the user asked to quit
+                break
+            results.append({"target": entry, "data": data})
         except (EOFError, KeyboardInterrupt):
             break
-        # Accept Esc key (stdin sends \x1b) as another way to quit.
-        if not entry or entry.lower() in {"q", "quit", "exit"} or entry.startswith("\x1b"):
-            break
-        with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
-            _, data = lookup(entry, session)
-        render(data)
-        extras_menu(data)
-        results.append({"target": entry, "data": data})
 
     successes = [r for r in results if isinstance(r.get("data"), dict) and "error" not in r["data"]]
     if successes:

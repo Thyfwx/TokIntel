@@ -29,6 +29,10 @@ import re
 import random
 import string
 import time
+try:
+    import readline  # noqa: F401  enables ← → line editing + ↑ history in the prompt
+except ImportError:
+    readline = None  # Windows without pyreadline; basic input still works
 from datetime import datetime, UTC
 from urllib.parse import quote, urlparse
 
