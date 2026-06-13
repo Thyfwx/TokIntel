@@ -169,6 +169,18 @@ def decode_snowflake(num):
 # the cryptic "user not found" code from TikTok.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,24}$")
 
+# TikTok's webapp.user-detail returns a numeric statusCode when it serves no
+# user. Map the known ones to plain English. 10221 = the handle never existed;
+# 209002 = the handle is recognized but no profile is served, which in practice
+# means a banned, suspended, or deleted account (a real signal, not just "not
+# found"). Unknown codes fall through to a generic, friendly message.
+_TIKTOK_STATUS = {
+    10221: "TikTok has no account with that username. Check the spelling, or it may have been deleted.",
+    209002: "This account is unavailable. TikTok recognizes the handle but returns no profile, "
+            "which usually means it was banned, suspended, or deleted (a username that never "
+            "existed gives a different result).",
+}
+
 
 def fetch_user(username, session):
     if not USERNAME_RE.match(username):
@@ -221,11 +233,19 @@ def fetch_user(username, session):
     # prefer statsV2 and fall back to stats only if it's absent.
     stats = info.get("statsV2") or info.get("stats") or {}
     if not user:
-        # TikTok's statusCode 10221 specifically means "no such user". Other
-        # codes are rare; keep the number for those cases but lead with English.
+        # 10221 is the only true "never existed". Every other code means TikTok
+        # recognizes the handle but won't serve a profile: an account that is
+        # unavailable (banned, suspended, deleted, private, or region-locked).
+        # That is NOT "not found", so it carries a state the UI titles honestly.
         if status == 10221:
-            return {"error": "TikTok has no account with that username. Check the spelling, or the account may have been deleted."}
-        return {"error": f"TikTok did not return a profile (status code {status})."}
+            return {"error": _TIKTOK_STATUS[10221]}
+        msg = _TIKTOK_STATUS.get(status,
+            "TikTok didn't return this profile. The account may be private, "
+            "region-locked, or temporarily unavailable. Try again in a moment.")
+        out = {"error": msg, "state": "unavailable"}
+        if status not in _TIKTOK_STATUS:
+            out["tiktok_status"] = status   # unknown code: kept for diagnosis, not shown
+        return out
 
     def as_int(v):
         try:
