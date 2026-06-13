@@ -24,10 +24,26 @@ CHECK
 
 "$PY" "$DIR/tiktok_ui.py" "$@"
 
-# When launched via TokIntel.app, the parent Terminal would otherwise show
-# "[Process completed]" and leave the user staring at a dead window. Pause
-# only when we're attached to a tty (skipped in non-interactive use).
+# When launched via TokIntel.app / TokIntel.command, Terminal would otherwise
+# leave a dead "[Process completed]" window open. When we're attached to a tty,
+# pause so the user can read the last line, then close the window for them.
 if [ -t 0 ] && [ -t 1 ]; then
     printf '\n  ✔  Done. Press Enter to close this window.'
     read -r _ || true
+    # macOS only: close this Terminal window after the script exits. Matched by
+    # tty and limited to a single-tab window, so a shared multi-tab window is
+    # never closed out from under the user. The detached sleep lets this script
+    # finish first, so Terminal sees no running process (no "still running?"
+    # prompt). If osascript is absent or blocked, the window just stays open as
+    # before, so this can only help, never break.
+    if command -v osascript >/dev/null 2>&1; then
+        _tty="$(tty 2>/dev/null)"
+        ( sleep 0.4
+          osascript \
+            -e 'tell application "Terminal"' \
+            -e 'repeat with w in windows' \
+            -e "if (count of tabs of w is 1) and (tty of (item 1 of tabs of w) is \"$_tty\") then close w" \
+            -e 'end repeat' \
+            -e 'end tell' ) >/dev/null 2>&1 &
+    fi
 fi

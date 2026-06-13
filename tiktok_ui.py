@@ -146,10 +146,13 @@ def render_simple(title, line, note=None, color="green"):
 
 def render(data):
     if "error" in data:
-        # A recognized-but-removed account (banned / deleted / private) isn't
-        # "not found"; title it honestly so the header doesn't contradict itself.
-        title = "unavailable" if data.get("state") == "unavailable" else "not found"
-        render_simple(title, data["error"], color="red")
+        # A handle TikTok recognizes but won't serve isn't "not found", and we
+        # can't prove it's gone, so it gets a softer amber "couldn't load" rather
+        # than a red "not found" verdict.
+        if data.get("state") == "unavailable":
+            render_simple("couldn't load", data["error"], color="yellow")
+        else:
+            render_simple("not found", data["error"], color="red")
     elif data.get("type") == "account":
         render_account(data)
     elif data.get("type") == "video":
