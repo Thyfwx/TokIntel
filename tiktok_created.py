@@ -28,6 +28,7 @@ import re
 import random
 import string
 import time
+import unicodedata
 try:
     import readline  # noqa: F401  enables ← → line editing + ↑ history in the prompt
 except ImportError:
@@ -169,6 +170,42 @@ def decode_snowflake(num):
 # the cryptic "user not found" code from TikTok.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,24}$")
 
+def _is_blank_name(name):
+    """True if a display name is empty or shows as nothing. Covers whitespace,
+    the control / format / separator / unassigned Unicode categories, and the
+    invisible glyphs people use for a 'no-name' TikTok profile. That last group
+    (Hangul fillers, the Braille blank) are letters or symbols by category, so
+    we spot them by their Unicode name instead. The account is still real."""
+    if not name:
+        return True
+    invisible_cats = {"Cc", "Cf", "Cn", "Co", "Cs", "Zs", "Zl", "Zp"}
+    for ch in name:
+        if ch.isspace() or unicodedata.category(ch) in invisible_cats:
+            continue
+        nm = unicodedata.name(ch, "")
+        if "FILLER" in nm or nm == "BRAILLE PATTERN BLANK":
+            continue
+        return False
+    return True
+
+
+def _oembed(username, session):
+    """Confirm an account exists through TikTok's oEmbed endpoint, which still
+    answers for accounts the logged-out profile API refuses to serve (statusCode
+    209002, e.g. hidden-name accounts). Returns the parsed JSON for a real
+    account, or None for a nonexistent handle or any failure. oEmbed carries
+    only the handle and display name, never a creation date."""
+    try:
+        r = session.get(
+            "https://www.tiktok.com/oembed?url=https://www.tiktok.com/@"
+            + quote(username, safe=""), timeout=8)
+        if r.status_code == 200:
+            return r.json()
+    except (requests.RequestException, ValueError):
+        pass
+    return None
+
+
 def fetch_user(username, session):
     if not USERNAME_RE.match(username):
         return {"error": "That doesn't look like a TikTok username. "
@@ -229,11 +266,25 @@ def fetch_user(username, session):
         if status == 10221:
             return {"error": "TikTok has no account with that username. "
                              "Check the spelling, or it may have been deleted."}
-        return {"error": "TikTok recognizes this handle but wouldn't return its "
-                         "profile to a logged-out lookup. It may be private, "
-                         "restricted, or only viewable when signed in. Open it on "
-                         "tiktok.com to check. This is not the same as a username "
-                         "that doesn't exist, and usually doesn't mean it's gone.",
+        # The logged-out profile API returned no user. Don't guess why: confirm
+        # through oEmbed, which still answers for these accounts (a hidden or
+        # blank display name is a common reason a profile lands here). If oEmbed
+        # confirms it, report a real account with limited detail, not an error.
+        oe = _oembed(username, session)
+        if oe:
+            name = oe.get("author_name") or ""
+            hidden = _is_blank_name(name)
+            return {
+                "type": "limited",
+                "username": _clean(username),
+                "name_hidden": hidden,
+                "nickname": None if hidden else _clean(name),
+                "tiktok_status": status,
+            }
+        return {"error": "TikTok wouldn't return this profile to a logged-out "
+                         "lookup, and oEmbed couldn't confirm the account either. "
+                         "It may be temporarily unavailable. Open it on tiktok.com "
+                         "to check.",
                 "state": "unavailable",
                 "tiktok_status": status}
 
@@ -614,6 +665,10 @@ def save_reports(results, prefix):
             elif d.get("type") == "video":
                 f.write(f"  Video uploaded : {d.get('uploaded')}\n")
                 f.write(f"  (video id {d.get('video_id')})\n")
+            elif d.get("type") == "limited":
+                f.write(f"  Username       : @{d.get('username')}\n")
+                f.write(f"  Display name   : {'hidden / blank' if d.get('name_hidden') else d.get('nickname')}\n")
+                f.write("  Account created: not available (TikTok won't serve this profile)\n")
             else:
                 f.write(f"  Decoded id     : {d.get('decoded')}\n")
             f.write("\n")
@@ -660,6 +715,14 @@ def show(data, indent="    "):
             else:
                 print(Fore.YELLOW + f"{indent}🟡 profile found, but TikTok didn't return a creation "
                       f"date (and the user ID isn't a decodable timestamp).")
+    elif data.get("type") == "limited":
+        u = data.get("username")
+        if data.get("name_hidden"):
+            print(Fore.CYAN + f"{indent}🔵 @{u} exists, but its display name is hidden or blank. "
+                  "No creation date is available for this kind of account; view it on tiktok.com.")
+        else:
+            print(Fore.CYAN + f"{indent}🔵 @{u} exists (name: {data.get('nickname')}). "
+                  "No creation date available; view it on tiktok.com.")
     elif data.get("type") == "video":
         print(Fore.GREEN + f"{indent}📅 uploaded: {data['uploaded']}")
     else:

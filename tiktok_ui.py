@@ -155,6 +155,16 @@ def render(data):
             render_simple("not found", data["error"], color="red")
     elif data.get("type") == "account":
         render_account(data)
+    elif data.get("type") == "limited":
+        u = _safe(data.get("username"))
+        if data.get("name_hidden"):
+            line = f"@{u} is a real account with a hidden or blank display name."
+        else:
+            line = f"@{u} is a real account (display name: {_safe(data.get('nickname'))})."
+        render_simple("found · limited info", line,
+                      note="A creation date isn't available for this kind of account. "
+                           "Open it on tiktok.com to see the profile.",
+                      color="cyan")
     elif data.get("type") == "video":
         render_simple("video", f"📅  uploaded {data.get('uploaded')}",
                       note="video upload time, not account creation")
