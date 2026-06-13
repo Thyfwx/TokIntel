@@ -107,6 +107,15 @@ def _count(x):
     return f"{x:,}" if isinstance(x, int) else ("—" if x in (None, "") else str(x))
 
 
+def _is_web_url(value):
+    """True only for http(s) URLs. These are the only links we ever turn into a
+    clickable terminal hyperlink. A hostile profile can put any scheme in its
+    bio link (file:, smb:, ssh:, javascript:, a custom app scheme); a one-click
+    open of those could leak credentials, reach an internal host, or launch an
+    app. Non-web links are still shown in full, just as plain text to copy."""
+    return isinstance(value, str) and bool(re.match(r"(?i)^https?://", value))
+
+
 def classify(value):
     """Return ('video', video_id) | ('user', username) | ('id', number)."""
     v = value.strip()
@@ -135,9 +144,9 @@ def classify(value):
 # seconds, so `id >> 32` recovers it. Many *user* IDs are NOT snowflakes: old
 # accounts use small sequential ids (e.g. 107955), and some newer ids decode to
 # a nonsense ~1970 date. So we only trust a decode that lands in a believable
-# window — the musical.ly/TikTok era through today. Anything outside that we
+# window: the musical.ly/TikTok era through today. Anything outside that we
 # report as unknown rather than printing a confidently wrong date.
-_SNOWFLAKE_MIN_TS = 1_388_534_400   # 2014-01-01 UTC — musical.ly-era floor
+_SNOWFLAKE_MIN_TS = 1_388_534_400   # 2014-01-01 UTC, musical.ly-era floor
 
 
 def decode_snowflake(num):
@@ -172,7 +181,7 @@ def fetch_user(username, session):
     # request structure. The host and scheme are already a fixed literal prefix.
     url = f"https://www.tiktok.com/@{quote(username, safe='')}"
 
-    # One brief retry on the "TikTok served a stub" case — usually a soft throttle
+    # One brief retry on the "TikTok served a stub" case, usually a soft throttle
     # that clears in a couple of seconds. Avoids the user seeing a scary technical
     # error for what is really just "wait a moment."
     m = None
@@ -183,18 +192,18 @@ def fetch_user(username, session):
             # No internet, DNS failure, connection reset, TLS error, etc. Retry
             # once for a transient blip, then fail with a plain-English message
             # rather than letting a raw HTTPSConnectionPool traceback string
-            # reach the user — every other error path here is already friendly.
+            # reach the user. Every other error path here is already friendly.
             if attempt == 1:
                 time.sleep(2.5)
                 continue
-            return {"error": "Couldn't reach TikTok — check your internet connection, then try again."}
+            return {"error": "Couldn't reach TikTok. Check your internet connection, then try again."}
         m = REHYDRATION_RE.search(r.text)
         if m:
             break
         if attempt == 1:
             time.sleep(2.5)
     if not m:
-        return {"error": "TikTok throttled this lookup — wait a moment, then try again."}
+        return {"error": "TikTok throttled this lookup. Wait a moment, then try again."}
     try:
         scope = json.loads(m.group(1)).get("__DEFAULT_SCOPE__", {})
     except ValueError:
@@ -202,7 +211,7 @@ def fetch_user(username, session):
 
     detail = scope.get("webapp.user-detail")
     if not detail:
-        return {"error": "user-detail missing — profile not returned (blocked, or no such page)"}
+        return {"error": "user-detail missing, profile not returned (blocked, or no such page)"}
 
     status = detail.get("statusCode")
     info = detail.get("userInfo", {})
@@ -215,7 +224,7 @@ def fetch_user(username, session):
         # TikTok's statusCode 10221 specifically means "no such user". Other
         # codes are rare; keep the number for those cases but lead with English.
         if status == 10221:
-            return {"error": "TikTok has no account with that username — check the spelling, or the account may have been deleted."}
+            return {"error": "TikTok has no account with that username. Check the spelling, or the account may have been deleted."}
         return {"error": f"TikTok did not return a profile (status code {status})."}
 
     def as_int(v):
@@ -232,6 +241,11 @@ def fetch_user(username, session):
     raw_bio_link = user.get("bioLink")
     bio_link = raw_bio_link.get("link") if isinstance(raw_bio_link, dict) else (
         raw_bio_link if isinstance(raw_bio_link, str) else None)
+    # Strip control bytes BEFORE the scheme check below. Otherwise a value like
+    # "\tfile:///etc/passwd" hides its scheme (the regex wants a leading letter),
+    # gets https:// prepended, and ends up a mangled but clickable link that also
+    # dodges the risky-scheme flag. Cleaning first keeps "file:" visible as "file:".
+    bio_link = _clean(bio_link)
     # TikTok stores some bio links without a scheme (e.g. "linktr.ee/tiktok"),
     # which then isn't clickable. Add https:// only when there's truly no scheme,
     # so we don't mangle "mailto:"/"tel:" or protocol-relative "//host".
@@ -253,7 +267,7 @@ def fetch_user(username, session):
         "verified": user.get("verified"),
         "private": user.get("privateAccount"),
         "bio": _clean(user.get("signature")),
-        "bio_link": bio_link,
+        "bio_link": bio_link,  # already control-byte-stripped above, before the scheme check
         "region": _clean(user.get("region")),
         "avatar": user.get("avatarLarger") or user.get("avatarMedium") or user.get("avatarThumb"),
         "unique_id_modify_time": user.get("uniqueIdModifyTime"),
@@ -285,7 +299,7 @@ def decode_id(num):
         "type": "raw_id",
         "id": num,
         "decoded": fmt(ts) if ts else None,
-        "note": ("Read straight from the ID number — TikTok bakes the post "
+        "note": ("Read straight from the ID number. TikTok bakes the post "
                  "time into video IDs. For an account's creation date, type "
                  "its @username instead (user IDs are too small to hold a "
                  "timestamp)."),
@@ -308,12 +322,16 @@ def osint_pivots(data):
     bio_link = data.get("bio_link")
 
     if username:
-        pivots.append(("Instagram", f"https://www.instagram.com/{username}/"))
-        pivots.append(("X / Twitter", f"https://x.com/{username}"))
-        pivots.append(("YouTube", f"https://www.youtube.com/@{username}"))
-        pivots.append(("Twitch", f"https://www.twitch.tv/{username}"))
-        pivots.append(("Reddit", f"https://www.reddit.com/user/{username}"))
-        pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{quote(username, safe='')}"))
+        # Encode the handle in every pivot, not just Wayback: it comes from
+        # TikTok's (attacker-controllable) profile JSON, so a crafted value
+        # shouldn't be able to bend the path or produce a misleading link.
+        u = quote(username, safe="")
+        pivots.append(("Instagram", f"https://www.instagram.com/{u}/"))
+        pivots.append(("X / Twitter", f"https://x.com/{u}"))
+        pivots.append(("YouTube", f"https://www.youtube.com/@{u}"))
+        pivots.append(("Twitch", f"https://www.twitch.tv/{u}"))
+        pivots.append(("Reddit", f"https://www.reddit.com/user/{u}"))
+        pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{u}"))
 
     if avatar:
         # One reverse-image link is enough for the "who is this?" check, and
@@ -347,19 +365,19 @@ def _pivot_section(label):
 #   curl twitch.tv/zzz_fake     -> 200   (200 for real too)
 #   curl reddit.com/user/zzz    -> 200   (200 for real too)
 #   curl instagram.com/zzz/     -> 200   (200 for real too)
-#   curl x.com/zzz              -> 403   (403 for real too — UA-blocked)
+#   curl x.com/zzz              -> 403   (403 for real too, UA-blocked)
 #   curl youtube.com/@zzz       -> 404   (200 for real)  <-- only reliable one
 _PROBE_LABELS = {"YouTube"}
 
 
 def probe_pivots(pivots, session=None):
     """HEAD-check pivot URLs whose platforms reliably distinguish real vs
-    fake usernames via HTTP status. Currently that is only YouTube — see the
+    fake usernames via HTTP status. Currently that is only YouTube. See the
     comment on _PROBE_LABELS. Returns 3-tuples (label, url, status):
-      'exists'  — 200 (account is there)
-      'missing' — 404 (definitive no)
-      'unknown' — anything else (timeout, 5xx, etc.)
-      None      — not a probed platform; just show the URL."""
+      'exists'  : 200 (account is there)
+      'missing' : 404 (definitive no)
+      'unknown' : anything else (timeout, 5xx, etc.)
+      None      : not a probed platform; just show the URL."""
     sess = session or new_session()
 
     def check(item):
@@ -380,6 +398,12 @@ def probe_pivots(pivots, session=None):
         return [(label, url, None) for label, url in pivots]
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
         return list(ex.map(check, pivots))
+
+
+# Bio-link schemes that are never merely informational: opening one could leak
+# credentials, reach a local file, or launch an app. We never make them
+# clickable; in flags mode we also call them out so the investigator notices.
+_RISKY_LINK_SCHEMES = {"file", "smb", "ssh", "ftp", "vnc", "data", "javascript", "jar", "telnet"}
 
 
 def integrity_flags(data):
@@ -407,22 +431,22 @@ def integrity_flags(data):
     if videos is not None and followers is not None:
         if videos == 0 and followers >= 10_000:
             flags.append(("warn",
-                f"0 videos but {followers:,} followers — possibly bought or farmed"))
+                f"0 videos but {followers:,} followers, possibly bought or farmed"))
         elif videos is not None and 0 < videos < 5 and followers >= 100_000:
             flags.append(("warn",
-                f"only {videos} videos but {followers:,} followers — unusual ratio"))
+                f"only {videos} videos but {followers:,} followers, an unusual ratio"))
 
     # Rapid-growth signal.
     if age_days is not None and followers is not None:
         if age_days < 180 and followers >= 100_000:
             flags.append(("warn",
-                f"account is only {age_days} days old but has {followers:,} followers — rapid growth"))
+                f"account is only {age_days} days old but has {followers:,} followers, rapid growth"))
 
     # Follow-farm pattern.
     if following is not None and followers is not None and following > 0:
         if following >= 1000 and following > max(followers, 1) * 3:
             flags.append(("info",
-                f"follows {following:,} but only {followers:,} followers — follow-back farm pattern"))
+                f"follows {following:,} but only {followers:,} followers, a follow-back farm pattern"))
 
     # Handle / nickname change signals (the data is already in the page JSON).
     now = datetime.now(UTC).timestamp()
@@ -432,7 +456,7 @@ def integrity_flags(data):
         if days_since < 90 and age_days is not None and age_days > 730:
             yrs = age_days // 365
             flags.append(("warn",
-                f"handle changed {days_since} days ago on a {yrs}-year-old account — possible rebrand, sale, or takeover"))
+                f"handle changed {days_since} days ago on a {yrs}-year-old account, a possible rebrand, sale, or takeover"))
 
     nick_mod = data.get("nick_name_modify_time")
     if isinstance(nick_mod, (int, float)) and nick_mod > 0:
@@ -448,11 +472,21 @@ def integrity_flags(data):
     nickname = (data.get("nickname") or "").strip()
     if re.match(r"^user\d{6,}$", nickname, re.I) and videos == 0 and not data.get("bio"):
         flags.append(("info",
-            "default display name, no bio, and 0 videos — looks like an empty or placeholder account"))
+            "default display name, no bio, and 0 videos, so it looks like an empty or placeholder account"))
+
+    # A bio link with a risky scheme is shown but never made clickable (see
+    # _is_web_url); this flag makes sure an investigator who only opens the
+    # integrity view still notices the account tried to plant such a link.
+    bio_link = data.get("bio_link")
+    if isinstance(bio_link, str) and bio_link and not _is_web_url(bio_link):
+        scheme = bio_link.split(":", 1)[0].lower()
+        if scheme in _RISKY_LINK_SCHEMES:
+            flags.append(("warn",
+                f"bio link uses a risky '{scheme}:' scheme, shown but not made clickable"))
 
     if not flags:
         flags.append(("ok",
-            "Followers, age, handle history, and growth all look normal — no red flags."))
+            "Followers, age, handle history, and growth all look normal. No red flags."))
     return flags
 
 
@@ -462,12 +496,17 @@ def _osc8(url, text=None):
     Old/unsupported terminals strip the escapes and just show `text`.
 
     Security: strips ASCII control bytes (NUL..0x1f and 0x7f) from both the
-    URL and the visible text. Without this, a hostile field embedded with
-    \\x1b or \\x07 could break out of the OSC 8 wrapper and inject other
-    terminal escapes (e.g. OSC 52, which writes to the user's clipboard on
-    some terminals)."""
+    URL and the visible text, and only http(s) URLs are ever made clickable.
+    Without the byte stripping, a hostile field embedded with \\x1b or \\x07
+    could break out of the OSC 8 wrapper and inject other terminal escapes
+    (e.g. OSC 52, which writes to the user's clipboard on some terminals)."""
     safe_url = url.translate(_CTRL_BYTES)
     safe_text = (text or safe_url).translate(_CTRL_BYTES)
+    if not _is_web_url(safe_url):
+        # Never turn a non-web link (file:, smb:, mailto:, a custom app scheme)
+        # into a clickable hyperlink. Show it as plain text so the user can read
+        # or copy it, but a single click can't open it.
+        return safe_text
     return f"\033]8;;{safe_url}\033\\{safe_text}\033]8;;\033\\"
 
 
@@ -595,7 +634,7 @@ def show(data, indent="    "):
 
 
 def run_batch(targets, session, show_osint=False, show_flags=False):
-    print(Fore.CYAN + f"\n[+] Targets: {len(targets)}  (free mode — no API key)\n")
+    print(Fore.CYAN + f"\n[+] Targets: {len(targets)}  (free mode, no API key)\n")
     results = []
     for i, target in enumerate(targets, 1):
         print(Fore.WHITE + f"[{i}/{len(targets)}] {target}")
@@ -613,7 +652,7 @@ def run_batch(targets, session, show_osint=False, show_flags=False):
 
 
 def run_interactive(session, show_osint=False, show_flags=False):
-    print(Fore.CYAN + "\n🔎 TikTok creation-date lookup  (free — no API key)")
+    print(Fore.CYAN + "\n🔎 TikTok creation-date lookup  (free, no API key)")
     print(Fore.WHITE + "   Type a username, @handle, or profile/video URL.")
     print(Fore.WHITE + "   Press Enter on an empty line (or type 'q') to quit.\n")
     results = []
@@ -638,7 +677,7 @@ def run_interactive(session, show_osint=False, show_flags=False):
 
 def main():
     p = argparse.ArgumentParser(
-        description="Get a TikTok account's creation date — free, no API key. "
+        description="Get a TikTok account's creation date. Free, no API key. "
                     "Run with no arguments for interactive mode.")
     p.add_argument("targets", nargs="*",
                    help="one or more usernames / @handles / profile or video URLs")
@@ -656,7 +695,7 @@ def main():
 
     # Command-line targets: zsh (unlike bash) does NOT strip inline '# comments',
     # so a '#' token arrives as a literal arg. Treat it as start-of-comment and
-    # ignore it plus everything after — a pasted "user  # note" stays clean.
+    # ignore it plus everything after, so a pasted "user  # note" stays clean.
     cli = []
     for t in [*args.targets, *( [args.input] if args.input else [] )]:
         if t.strip().startswith("#"):
@@ -706,7 +745,7 @@ def main():
         jp, tp = save_reports(results, prefix)
         print(Fore.CYAN + f"\n📁 Reports:\n   {jp}\n   {tp}\n")
     elif results:
-        print(Fore.YELLOW + "\n📭 Nothing worth saving — every lookup this session errored. No report written.\n")
+        print(Fore.YELLOW + "\n📭 Nothing worth saving. Every lookup this session errored. No report written.\n")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,8 @@ I aim to acknowledge within 7 days, and credit you in the fix.
 
 This tool reads public TikTok profile data, runs locally, and stores results under `reports/`. Useful things to look at:
 
-- Input handling: anything that reaches `fetch_user`, `_osc8`, `save_avatar`, or the URL builders.
-- Terminal escape injection in the OSINT pivot output.
+- Input handling: anything that reaches `fetch_user`, the pivot URL builders in `osint_pivots`, or the clickable-link helpers (`_osc8`, `_safe_link`).
+- Terminal escape injection in the OSINT pivot output, and which link schemes are made clickable (only `http`/`https`).
 - Filesystem write paths (everything writes under `reports/`).
 - Supply chain in `requirements.txt` and the launcher install step.
 

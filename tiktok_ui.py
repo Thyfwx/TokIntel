@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tiktok_ui.py — a pretty terminal UI for TikTok account creation-date lookups.
+tiktok_ui.py: a pretty terminal UI for TikTok account creation-date lookups.
 
 Wraps the free, no-API logic from tiktok_created.py in a Rich interface:
 type a username (or @handle / profile URL / video URL) and get a clean card
@@ -33,7 +33,7 @@ from rich import box
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    probe_pivots, human_age, _pivot_section,
+    probe_pivots, human_age, _pivot_section, _is_web_url,
 )
 
 console = Console()
@@ -72,9 +72,13 @@ def _safe_link(url, text=None):
     """A clickable cell built as a styled Text (not markup), so a hostile bio
     link or avatar URL can't break out of [link=...] or smuggle terminal
     escapes. Visible text defaults to the URL; pass `text` for a clean label.
-    The link target is set via a Style object, never string-parsed."""
+    Only http(s) URLs are made clickable; any other scheme (file:, smb:,
+    mailto:, a custom app scheme) is shown as plain text so a single click
+    can't open it. The link target is set via a Style object, never string-parsed."""
     clean_url = str(url).translate(_CTRL_BYTES)
     label = str(text).translate(_CTRL_BYTES) if text is not None else clean_url
+    if not _is_web_url(clean_url):
+        return Text(label)
     return Text(label, style=Style(link=clean_url))
 
 
@@ -261,7 +265,7 @@ def main():
     results = []
     while True:
         # One try/except around the whole turn, so Ctrl-C or Ctrl-D quits from
-        # anywhere — the lookup prompt, the fetch, or the extras menu — not just
+        # anywhere: the lookup prompt, the fetch, or the extras menu, not just
         # from one exact spot.
         try:
             # Plain prompt (no color codes, no emoji) so readline's cursor math
@@ -285,7 +289,7 @@ def main():
         _, tp = save_reports(results, "ui")
         console.print(f"\n[dim]Looked up {len(results)} · report saved →[/] {tp}")
     elif results:
-        console.print("\n[yellow]Nothing worth saving — every lookup errored. No report written.[/]")
+        console.print("\n[yellow]Nothing worth saving. Every lookup errored. No report written.[/]")
     console.print("\n[dim]bye[/]\n")
 
 
