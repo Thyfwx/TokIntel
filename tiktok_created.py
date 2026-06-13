@@ -309,10 +309,13 @@ def decode_id(num):
 # ----------------------------------------------------------- OSINT extras
 def osint_pivots(data):
     """Return an ordered list of (label, url) pivots for an account result.
-    URLs only, no fetches happen here, the user clicks them. The order groups
-    them: the same handle on other platforms first, then a reverse image search
-    of the avatar (the "who is this really?" / impostor check), then the
-    profile's own bio link."""
+    URLs only, no fetches happen here, the user clicks them. They group into:
+    the one platform whose existence we can actually confirm (YouTube), then
+    the same name on platforms we cannot confirm (leads to check, never sold as
+    findings), then a reverse image search of the avatar, the bio link, and the
+    profile's own archived history. Honesty matters more than volume here: we
+    would rather show fewer links than imply an account exists when it might
+    not, or might be a different person."""
     pivots = []
     if not isinstance(data, dict) or data.get("type") != "account":
         return pivots
@@ -320,18 +323,21 @@ def osint_pivots(data):
     username = data.get("username")
     avatar = data.get("avatar")
     bio_link = data.get("bio_link")
+    # Encode the handle everywhere: it comes from TikTok's (attacker-controllable)
+    # profile JSON, so a crafted value shouldn't be able to bend the path or
+    # produce a misleading link.
+    u = quote(username, safe="") if username else None
 
     if username:
-        # Encode the handle in every pivot, not just Wayback: it comes from
-        # TikTok's (attacker-controllable) profile JSON, so a crafted value
-        # shouldn't be able to bend the path or produce a misleading link.
-        u = quote(username, safe="")
+        # YouTube is the only platform we can verify (it 404s for a fake handle).
+        pivots.append(("YouTube", f"https://www.youtube.com/@{u}"))
+        # Same name on platforms that answer identically for real and fake names
+        # (or block us). We can't confirm these, so they are shown as unconfirmed
+        # leads, not as accounts we found.
         pivots.append(("Instagram", f"https://www.instagram.com/{u}/"))
         pivots.append(("X / Twitter", f"https://x.com/{u}"))
-        pivots.append(("YouTube", f"https://www.youtube.com/@{u}"))
         pivots.append(("Twitch", f"https://www.twitch.tv/{u}"))
         pivots.append(("Reddit", f"https://www.reddit.com/user/{u}"))
-        pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{u}"))
 
     if avatar:
         # One reverse-image link is enough for the "who is this?" check, and
@@ -342,11 +348,15 @@ def osint_pivots(data):
     if bio_link:
         pivots.append(("Bio link", bio_link))
 
+    if username:
+        pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{u}"))
+
     return pivots
 
 
 # Which section a pivot belongs to, used for the headings in the panel.
 _REVERSE_IMAGE = {"Google Lens"}
+_CHECKABLE = {"YouTube"}   # the only platform whose existence we can confirm by HTTP
 
 
 def _pivot_section(label):
@@ -354,19 +364,24 @@ def _pivot_section(label):
         return "who is this?  (reverse image search of the avatar)"
     if label == "Bio link":
         return "their own bio link"
-    return "same handle on other platforms"
+    if label == "Wayback":
+        return "this profile's history (Wayback Machine)"
+    if label in _CHECKABLE:
+        return "same name, checked"
+    return "same name, unconfirmed (may be a different person, or nobody)"
 
 
-# Only YouTube reliably 404s for nonexistent usernames. Reddit / Instagram /
-# X / Twitch all serve JS-routed SPAs that return HTTP 200 with a "no such
-# user" page rendered client-side, so the HTTP status carries no useful signal.
-# Rather than print misleading ✓ marks, we don't probe them at all and let the
-# user click through to verify by eye. This was checked empirically:
-#   curl twitch.tv/zzz_fake     -> 200   (200 for real too)
-#   curl reddit.com/user/zzz    -> 200   (200 for real too)
-#   curl instagram.com/zzz/     -> 200   (200 for real too)
-#   curl x.com/zzz              -> 403   (403 for real too, UA-blocked)
-#   curl youtube.com/@zzz       -> 404   (200 for real)  <-- only reliable one
+# Only YouTube reliably 404s for a nonexistent handle. Instagram / X / Twitch /
+# Reddit all answer identically for real and fake names (SPA 200s, redirects,
+# or outright blocks), so the HTTP status carries no useful signal. Rather than
+# print misleading ✓ marks, we don't probe them and label them "unconfirmed",
+# so they are never mistaken for accounts we found. Checked empirically (2026-06):
+#   curl twitch.tv/zzz_fake             -> 200   (200 for real too)
+#   curl reddit.com/user/zzz            -> 301   (301 for real too)
+#   curl reddit.com/user/zzz/about.json -> 403   (403 for real too; blocks scripts)
+#   curl instagram.com/zzz/             -> 200   (200 for real too)
+#   curl x.com/zzz                      -> 403   (403 for real too, UA-blocked)
+#   curl youtube.com/@zzz               -> 404   (200 for real)  <-- only reliable one
 _PROBE_LABELS = {"YouTube"}
 
 
@@ -514,11 +529,13 @@ _STATUS_ICON = {"exists": "✓", "missing": "✗", "unknown": "?"}
 
 
 def print_pivots_plain(data, session=None):
-    """Plain-text rendering of pivot links for CLI mode. Prints each pivot as a
-    visible URL grouped by purpose. The URL is wrapped in an OSC 8 hyperlink so
-    modern terminals make it clickable, and it also shows in full so it stays
-    readable and copyable in any terminal. YouTube is marked ✓ / ✗ when its
-    existence can be confirmed; the others can't be probed reliably."""
+    """Plain-text rendering of pivot links for CLI mode, grouped by purpose.
+    A web URL is wrapped in an OSC 8 hyperlink so modern terminals make it
+    clickable, and shows in full so it stays readable and copyable everywhere.
+    YouTube is the one platform we can confirm: ✓ when it exists, and when it
+    404s we print 'no account with this name' instead of a dead link. The other
+    same-name links can't be confirmed, so they sit under an 'unconfirmed'
+    heading and are never sold as accounts we found."""
     pivots = osint_pivots(data)
     if not pivots:
         return
@@ -532,7 +549,11 @@ def print_pivots_plain(data, session=None):
             section = sect
             print(Fore.CYAN + f"\n    {sect}")
         mark = _STATUS_ICON.get(status or "", " ")
-        print(Fore.WHITE + f"       {mark} {label:<14}{_osc8(url)}")
+        if status == "missing":
+            # Verified not to exist: say so plainly rather than show a dead link.
+            print(Fore.WHITE + f"       {mark} {label:<14}" + Fore.YELLOW + "no account with this name")
+        else:
+            print(Fore.WHITE + f"       {mark} {label:<14}{_osc8(url)}")
 
 
 def print_flags_plain(data):

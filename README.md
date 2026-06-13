@@ -18,7 +18,7 @@
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
-- **Optional OSINT pivots** (opt in): same-handle links on Instagram / X / YouTube / Twitch / Reddit, a Wayback Machine snapshot of the profile, a Google Lens reverse image search of the avatar to find who a photo really belongs to, and the profile's bio link. Links are shown in full, no images are downloaded.
+- **Optional OSINT pivots** (opt in): the same name checked on YouTube (the one platform that gives an honest yes/no), the same name as *unconfirmed* leads on Instagram / X / Twitch / Reddit (those can't be verified without logging in, so they're never shown as accounts it found), a Google Lens reverse image search of the avatar, the profile's bio link, and a Wayback Machine snapshot of the profile. Everything shows in full, nothing is downloaded, and only `http(s)` links are clickable.
   <p align="center"><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
 - **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and handle / display-name changes that can hint at a rebrand, sale, or takeover.
 - **Reports** saved to `reports/` as JSON and TXT.

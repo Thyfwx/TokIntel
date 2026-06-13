@@ -193,11 +193,13 @@ def render_pivots(data):
         tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)   # label
         tbl.add_column(style="white", overflow="fold")                    # visible URL
         for label, url, status in by_section[sect]:
-            tbl.add_row(_STATUS_BADGE[status], label, _safe_link(url))
+            value = (Text("no account with this name", style="yellow")
+                     if status == "missing" else _safe_link(url))
+            tbl.add_row(_STATUS_BADGE[status], label, value)
         blocks += [Text(sect, style="dim"), tbl, Text("")]
 
     console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
-                        subtitle="[dim]click any link to open it · ✓ = YouTube confirmed[/]",
+                        subtitle="[dim]click any link to open it · ✓ found · ✗ no account[/]",
                         subtitle_align="left",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
 
