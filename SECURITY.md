@@ -17,5 +17,6 @@ This tool reads public TikTok profile data, runs locally, and stores results und
 - Terminal escape injection in the OSINT pivot output, and which link schemes are made clickable (only `http`/`https`).
 - Filesystem write paths (everything writes under `reports/`).
 - Supply chain in `requirements.txt` and the launcher install step.
+- Optional login mode (off by default): for accounts behind audience controls, a TikTok session is read at runtime from `TIKTOK_COOKIE` / `TIKTOK_SESSIONID`, a gitignored `tiktok_session.txt`, or your own browser via `browser-cookie3`. It is held in memory for the request only and never written to a report, a log, the screen, or the repo, and nothing about it ships in the source.
 
 Out of scope: the TikTok service itself, network attacks on the host machine, and anything in the original [HackUnderway/TokIntel](https://github.com/HackUnderway/TokIntel) repo unrelated to this fork.

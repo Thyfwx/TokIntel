@@ -34,7 +34,7 @@ try:
 except ImportError:
     readline = None  # Windows without pyreadline; basic input still works
 from datetime import datetime, UTC
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 
@@ -192,7 +192,7 @@ def _is_blank_name(name):
 def _oembed(username, session):
     """Confirm an account exists through TikTok's oEmbed endpoint, which still
     answers for accounts the logged-out profile API refuses to serve (statusCode
-    209002, e.g. hidden-name accounts). Returns the parsed JSON for a real
+    209002, e.g. accounts with audience controls). Returns the parsed JSON for a real
     account, or None for a nonexistent handle or any failure. oEmbed carries
     only the handle and display name, never a creation date."""
     try:
@@ -266,10 +266,12 @@ def fetch_user(username, session):
         if status == 10221:
             return {"error": "TikTok has no account with that username. "
                              "Check the spelling, or it may have been deleted."}
-        # The logged-out profile API returned no user. Don't guess why: confirm
-        # through oEmbed, which still answers for these accounts (a hidden or
-        # blank display name is a common reason a profile lands here). If oEmbed
-        # confirms it, report a real account with limited detail, not an error.
+        # The logged-out profile API returned no user, almost always because the
+        # account has audience controls on (TikTok's "18 and older" setting gives
+        # exactly this 209002 wall). Don't guess: confirm through oEmbed, which
+        # still answers for these accounts. If it's real, say so and explain how
+        # to read it (a logged-in session, or the owner turning the setting off),
+        # instead of calling a real account an error.
         oe = _oembed(username, session)
         if oe:
             name = oe.get("author_name") or ""
@@ -280,6 +282,7 @@ def fetch_user(username, session):
                 "name_hidden": hidden,
                 "nickname": None if hidden else _clean(name),
                 "tiktok_status": status,
+                "session_active": _session_configured(),
             }
         return {"error": "TikTok wouldn't return this profile to a logged-out "
                          "lookup, and oEmbed couldn't confirm the account either. "
@@ -370,13 +373,12 @@ def decode_id(num):
 # ----------------------------------------------------------- OSINT extras
 def osint_pivots(data):
     """Return an ordered list of (label, url) pivots for an account result.
-    URLs only, no fetches happen here, the user clicks them. They group into:
-    the one platform whose existence we can actually confirm (YouTube), then
-    the same name on platforms we cannot confirm (leads to check, never sold as
-    findings), then a reverse image search of the avatar, the bio link, and the
-    profile's own archived history. Honesty matters more than volume here: we
-    would rather show fewer links than imply an account exists when it might
-    not, or might be a different person."""
+    URLs only, no fetches happen here: the same handle on platforms we can
+    verify by HTTP (YouTube, GitHub, Linktree, Snapchat, SoundCloud, Patreon,
+    Tumblr, Roblox), a web search of the handle, reverse image searches of the
+    avatar (Google Lens, Yandex, TinEye), the account's own bio link, and its
+    Wayback history. Platforms we can't tell real from fake on without a login
+    (Instagram, X, Twitch, Reddit, ...) are left out instead of guessed."""
     pivots = []
     if not isinstance(data, dict) or data.get("type") != "account":
         return pivots
@@ -384,66 +386,102 @@ def osint_pivots(data):
     username = data.get("username")
     avatar = data.get("avatar")
     bio_link = data.get("bio_link")
-    # Encode the handle everywhere: it comes from TikTok's (attacker-controllable)
-    # profile JSON, so a crafted value shouldn't be able to bend the path or
-    # produce a misleading link.
+    # Encode the handle: it comes from TikTok's (attacker-controllable) profile
+    # JSON, so a crafted value shouldn't be able to bend the path or produce a
+    # misleading link.
     u = quote(username, safe="") if username else None
 
     if username:
-        # YouTube is the only platform we can verify (it 404s for a fake handle).
+        # Same-name platforms that 404 for a fake handle, so we can verify each
+        # one exists before showing it (see probe_pivots / _PROBE_LABELS). Only
+        # the ones that actually resolve get shown.
         pivots.append(("YouTube", f"https://www.youtube.com/@{u}"))
-        # Same name on platforms that answer identically for real and fake names
-        # (or block us). We can't confirm these, so they are shown as unconfirmed
-        # leads, not as accounts we found.
-        pivots.append(("Instagram", f"https://www.instagram.com/{u}/"))
-        pivots.append(("X / Twitter", f"https://x.com/{u}"))
-        pivots.append(("Twitch", f"https://www.twitch.tv/{u}"))
-        pivots.append(("Reddit", f"https://www.reddit.com/user/{u}"))
-
+        pivots.append(("GitHub", f"https://github.com/{u}"))
+        pivots.append(("Linktree", f"https://linktr.ee/{u}"))
+        pivots.append(("Snapchat", f"https://www.snapchat.com/add/{u}"))
+        pivots.append(("SoundCloud", f"https://soundcloud.com/{u}"))
+        pivots.append(("Patreon", f"https://www.patreon.com/{u}"))
+        pivots.append(("Tumblr", f"https://www.tumblr.com/{u}"))
+        pivots.append(("Roblox", f"https://www.roblox.com/user.aspx?username={u}"))
+        # A web search for the exact handle: surfaces real mentions and linked
+        # accounts across the web, not just same-name guesses.
+        pivots.append(("Google search", f"https://www.google.com/search?q=%22{u}%22"))
     if avatar:
-        # One reverse-image link is enough for the "who is this?" check, and
-        # Google Lens is the strongest (it tends to name the actual person).
+        # Reverse image searches of the avatar. Lens is best for objects, Yandex
+        # for finding a real person by face, TinEye for exact copies elsewhere.
         avq = quote(avatar, safe="")
         pivots.append(("Google Lens", f"https://lens.google.com/uploadbyurl?url={avq}"))
-
+        pivots.append(("Yandex image", f"https://yandex.com/images/search?rpt=imageview&url={avq}"))
+        pivots.append(("TinEye", f"https://tineye.com/search?url={avq}"))
     if bio_link:
         pivots.append(("Bio link", bio_link))
-
     if username:
+        # Shown only when a snapshot actually exists (verified in probe_pivots).
         pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{u}"))
 
     return pivots
 
 
-# Which section a pivot belongs to, used for the headings in the panel.
-_REVERSE_IMAGE = {"Google Lens"}
-_CHECKABLE = {"YouTube"}   # the only platform whose existence we can confirm by HTTP
+# Pivots that point at the target itself, kept apart from the same handle on
+# other sites so we never imply a namesake is the same person.
+_OWN_PIVOTS = {"Bio link", "Wayback", "Google Lens", "Yandex image", "TinEye", "Google search"}
+
+# Host for each same-handle platform. Used to confirm one as really theirs when
+# the account's own bio link points to it (the owner linked it themselves).
+_PLATFORM_HOST = {
+    "YouTube": "youtube.com", "GitHub": "github.com", "Linktree": "linktr.ee",
+    "Snapchat": "snapchat.com", "SoundCloud": "soundcloud.com",
+    "Patreon": "patreon.com", "Tumblr": "tumblr.com", "Roblox": "roblox.com",
+}
 
 
-def _pivot_section(label):
-    if label in _REVERSE_IMAGE:
-        return "who is this?  (reverse image search of the avatar)"
-    if label == "Bio link":
-        return "their own bio link"
-    if label == "Wayback":
-        return "this profile's history (Wayback Machine)"
-    if label in _CHECKABLE:
-        return "same name, checked"
-    return "same name, unconfirmed (may be a different person, or nobody)"
+def grouped_pivots(probed, bio_link=None):
+    """Split probed pivots for display. Returns (own, same_name, found_handle):
+      own         : the target's own links, its bio link, Wayback snapshot, avatar
+                    reverse image search, plus any same-handle account the profile
+                    itself links to from its bio (so we know it really is them).
+      same_name   : the same handle found on other platforms that we can't tie to
+                    this person, so a possible namesake.
+      found_handle: whether the handle turned up on any other platform at all.
+    Only confirmed or resolving links are returned; misses are dropped."""
+    bio_host = ""
+    if bio_link:
+        try:
+            bio_host = (urlparse(bio_link).hostname or "").lower()
+            if bio_host.startswith("www."):
+                bio_host = bio_host[4:]
+        except Exception:
+            bio_host = ""
+    own, same_name, found_handle = [], [], False
+    for label, url, status in probed:
+        if label in _OWN_PIVOTS:
+            # Bio link and Google Lens always apply; Wayback only when a real
+            # snapshot is confirmed (its availability API rate-limits and can
+            # fail, so we never claim a 'none' we might be wrong about).
+            if label == "Wayback" and status != "exists":
+                continue
+            own.append((label, url, status))
+        elif status == "exists":
+            found_handle = True
+            host = _PLATFORM_HOST.get(label, "")
+            # If the profile's own bio link points to this platform, the owner
+            # linked it themselves, so it is confirmed theirs, not a namesake.
+            confirmed = bool(host and bio_host and
+                             (bio_host == host or bio_host.endswith("." + host)))
+            (own if confirmed else same_name).append((label, url, status))
+    return own, same_name, found_handle
 
 
-# Only YouTube reliably 404s for a nonexistent handle. Instagram / X / Twitch /
-# Reddit all answer identically for real and fake names (SPA 200s, redirects,
-# or outright blocks), so the HTTP status carries no useful signal. Rather than
-# print misleading ✓ marks, we don't probe them and label them "unconfirmed",
-# so they are never mistaken for accounts we found. Checked empirically (2026-06):
-#   curl twitch.tv/zzz_fake             -> 200   (200 for real too)
-#   curl reddit.com/user/zzz            -> 301   (301 for real too)
-#   curl reddit.com/user/zzz/about.json -> 403   (403 for real too; blocks scripts)
-#   curl instagram.com/zzz/             -> 200   (200 for real too)
-#   curl x.com/zzz                      -> 403   (403 for real too, UA-blocked)
-#   curl youtube.com/@zzz               -> 404   (200 for real)  <-- only reliable one
-_PROBE_LABELS = {"YouTube"}
+# Platforms we can actually verify before showing a link: they 404 for a fake
+# handle, so the HTTP status is a real yes/no. Wayback is verified through its
+# availability API instead. Platforms that answer the same for real and fake
+# names (login walls, SPA 200s, or blocks) carry no signal and aren't listed.
+# Checked empirically (2026-06):
+#   verifiable -> youtube, github, linktr.ee, snapchat, soundcloud, patreon,
+#                 tumblr, roblox   (404 for a fake handle, 200 for a real one)
+#   no signal  -> instagram, x, twitch, reddit, telegram, steam, pinterest, kick
+_PROBE_LABELS = {"YouTube", "GitHub", "Linktree", "Snapchat", "SoundCloud",
+                 "Patreon", "Tumblr", "Roblox", "Wayback"}
 
 
 def probe_pivots(pivots, session=None):
@@ -461,10 +499,41 @@ def probe_pivots(pivots, session=None):
         if label not in _PROBE_LABELS:
             return (label, url, None)
         try:
-            r = sess.head(url, timeout=5, allow_redirects=True)
-            if r.status_code == 200:
+            if label == "Wayback":
+                # The pivot URL ends in ".../web/*/tiktok.com/@handle"; ask the
+                # availability API whether any snapshot exists for that target.
+                # Decode the handle (percent-encoded upstream) and let requests
+                # re-encode the query param exactly once; the availability API
+                # reports no match unless ?url= is encoded. When a snapshot
+                # exists, show that real capture URL (guaranteed to load) rather
+                # than a wildcard calendar that may not resolve.
+                target = unquote(url.split("/web/*/", 1)[-1])
+                # The availability API is flaky under load and can return empty
+                # for a profile that IS archived, so try twice before believing
+                # there's no snapshot.
+                snap = {}
+                for attempt in (1, 2):
+                    try:
+                        r = sess.get("https://archive.org/wayback/available",
+                                     params={"url": target}, timeout=6)
+                        snap = (r.json().get("archived_snapshots") or {}).get("closest") or {}
+                    except Exception:
+                        snap = {}
+                    if snap.get("url"):
+                        break
+                    if attempt == 1:
+                        time.sleep(0.6)
+                if snap.get("url"):
+                    return (label, snap["url"], "exists")
+                return (label, url, "missing")
+            # GET with the body streamed (never read) is more reliable across
+            # these sites than HEAD, which some answer wrongly or reject.
+            r = sess.get(url, timeout=6, allow_redirects=True, stream=True)
+            code = r.status_code
+            r.close()
+            if code == 200:
                 return (label, url, "exists")
-            if r.status_code == 404:
+            if code in (404, 410):
                 return (label, url, "missing")
             return (label, url, "unknown")
         except Exception:
@@ -472,7 +541,7 @@ def probe_pivots(pivots, session=None):
 
     if not any(label in _PROBE_LABELS for label, _ in pivots):
         return [(label, url, None) for label, url in pivots]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         return list(ex.map(check, pivots))
 
 
@@ -531,8 +600,9 @@ def integrity_flags(data):
         days_since = int((now - uid_mod) / 86400)
         if days_since < 90 and age_days is not None and age_days > 730:
             yrs = age_days // 365
-            flags.append(("warn",
-                f"handle changed {days_since} days ago on a {yrs}-year-old account, a possible rebrand, sale, or takeover"))
+            flags.append(("info",
+                f"handle changed {days_since} days ago on a {yrs}-year-old account "
+                "(normal on its own; only worth a look alongside other odd signals)"))
 
     nick_mod = data.get("nick_name_modify_time")
     if isinstance(nick_mod, (int, float)) and nick_mod > 0:
@@ -566,55 +636,34 @@ def integrity_flags(data):
     return flags
 
 
-def _osc8(url, text=None):
-    """Wrap a URL with OSC 8 escape codes so modern terminals (Terminal.app,
-    iTerm2, kitty, Warp, GNOME, WezTerm) render it as a clickable hyperlink.
-    Old/unsupported terminals strip the escapes and just show `text`.
-
-    Security: strips ASCII control bytes (NUL..0x1f and 0x7f) from both the
-    URL and the visible text, and only http(s) URLs are ever made clickable.
-    Without the byte stripping, a hostile field embedded with \\x1b or \\x07
-    could break out of the OSC 8 wrapper and inject other terminal escapes
-    (e.g. OSC 52, which writes to the user's clipboard on some terminals)."""
-    safe_url = url.translate(_CTRL_BYTES)
-    safe_text = (text or safe_url).translate(_CTRL_BYTES)
-    if not _is_web_url(safe_url):
-        # Never turn a non-web link (file:, smb:, mailto:, a custom app scheme)
-        # into a clickable hyperlink. Show it as plain text so the user can read
-        # or copy it, but a single click can't open it.
-        return safe_text
-    return f"\033]8;;{safe_url}\033\\{safe_text}\033]8;;\033\\"
-
-
-_STATUS_ICON = {"exists": "✓", "missing": "✗", "unknown": "?"}
-
-
 def print_pivots_plain(data, session=None):
-    """Plain-text rendering of pivot links for CLI mode, grouped by purpose.
-    A web URL is wrapped in an OSC 8 hyperlink so modern terminals make it
-    clickable, and shows in full so it stays readable and copyable everywhere.
-    YouTube is the one platform we can confirm: ✓ when it exists, and when it
-    404s we print 'no account with this name' instead of a dead link. The other
-    same-name links can't be confirmed, so they sit under an 'unconfirmed'
-    heading and are never sold as accounts we found."""
+    """Plain-text pivots for CLI mode, in two groups: the target's own links
+    (bio link, Wayback snapshot, avatar reverse image search, plus any same-handle
+    account confirmed through their bio), then the same handle found on other
+    sites. Links are shown as full URLs to copy or open, nothing is made
+    clickable. Anything we couldn't confirm or that didn't resolve is left out."""
     pivots = osint_pivots(data)
     if not pivots:
         return
-    print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking platforms…)")
-    probed = probe_pivots(pivots, session=session)
+    print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking…)")
+    own, same_name, found_handle = grouped_pivots(
+        probe_pivots(pivots, session=session), data.get("bio_link"))
 
-    section = None
-    for label, url, status in probed:
-        sect = _pivot_section(label)
-        if sect != section:
-            section = sect
-            print(Fore.CYAN + f"\n    {sect}")
-        mark = _STATUS_ICON.get(status or "", " ")
-        if status == "missing":
-            # Verified not to exist: say so plainly rather than show a dead link.
-            print(Fore.WHITE + f"       {mark} {label:<14}" + Fore.YELLOW + "no account with this name")
-        else:
-            print(Fore.WHITE + f"       {mark} {label:<14}{_osc8(url)}")
+    def show(group):
+        for i, (label, url, _) in enumerate(group):
+            if i:
+                print()   # a little breathing room between links
+            print(Fore.WHITE + f"       {label:<12} {url.translate(_CTRL_BYTES)}")
+
+    if own:
+        print(Fore.CYAN + "\n    From this profile")
+        show(own)
+    if same_name:
+        print(Fore.CYAN + "\n    Same handle on other sites")
+        show(same_name)
+    elif not found_handle:
+        print(Fore.CYAN + "\n    Same handle on other sites")
+        print(Fore.YELLOW + "       Nothing found with this handle")
 
 
 def print_flags_plain(data):
@@ -623,9 +672,9 @@ def print_flags_plain(data):
     if not flags:
         return
     print(Fore.CYAN + "    🚩 Integrity flags")
-    icon = {"warn": "⚠️ ", "info": "ℹ️ ", "ok": "✅"}
+    color = {"warn": Fore.YELLOW, "info": Fore.WHITE, "ok": Fore.GREEN}
     for sev, msg in flags:
-        print(f"       {icon.get(sev, '·')} {msg}")
+        print(color.get(sev, Fore.WHITE) + f"       {msg}")
 
 
 # ------------------------------------------------------------------ reports
@@ -633,6 +682,30 @@ def reports_dir():
     if not os.path.exists("reports"):
         os.makedirs("reports")
     return "reports"
+
+
+def limited_lines(data):
+    """Two human lines for a real account TikTok won't serve to a logged-out
+    request (audience controls, e.g. the 18+ setting): a 'who' label and a hint
+    on how to read it. Shared by the CLI, the saved report, and the Rich UI."""
+    u = data.get("username")
+    if data.get("name_hidden"):
+        who = f"@{u} (display name hidden, an invisible character)"
+    elif data.get("nickname"):
+        who = f"@{u} ({data.get('nickname')})"
+    else:
+        who = f"@{u}"
+    if data.get("session_active"):
+        hint = ("Your saved TikTok session didn't unlock it. It may be logged "
+                "out or expired, or the account is restricted beyond the usual "
+                "audience controls.")
+    else:
+        hint = ("TikTok has audience controls on this account (like the 18 and "
+                "older setting), so looking it up without a login can't read its "
+                "date or stats. Sign into TikTok in your browser and the tool can "
+                "read it with that login (see the README), or the owner can turn "
+                "that setting off.")
+    return who, hint
 
 
 def save_reports(results, prefix):
@@ -666,9 +739,11 @@ def save_reports(results, prefix):
                 f.write(f"  Video uploaded : {d.get('uploaded')}\n")
                 f.write(f"  (video id {d.get('video_id')})\n")
             elif d.get("type") == "limited":
+                _, hint = limited_lines(d)
                 f.write(f"  Username       : @{d.get('username')}\n")
                 f.write(f"  Display name   : {'hidden / blank' if d.get('name_hidden') else d.get('nickname')}\n")
-                f.write("  Account created: not available (TikTok won't serve this profile)\n")
+                f.write("  Account created: not available without a logged-in session\n")
+                f.write(f"  Note           : {hint}\n")
             else:
                 f.write(f"  Decoded id     : {d.get('decoded')}\n")
             f.write("\n")
@@ -676,9 +751,116 @@ def save_reports(results, prefix):
 
 
 # ------------------------------------------------------------------ main
+_session_value = (None, None)   # cached (cookie_header, sessionid)
+_session_read = False           # whether we've resolved the session yet
+
+
+def _cookies_from_browser(browser):
+    """Read the user's own TikTok cookies from their local browser (opt-in via
+    TIKTOK_COOKIES_FROM_BROWSER=chrome|firefox|edge|brave|safari|...). Returns a
+    Cookie header string, or None. Read locally at runtime with browser_cookie3,
+    used in memory for the request only, never stored, logged, printed, or put in
+    the repo. Never raises."""
+    try:
+        import browser_cookie3 as bc3
+    except ImportError:
+        print("  Browser reader not available. Start TokIntel with start.sh or "
+              "TokIntel.app and it installs itself.")
+        return None
+    loader = getattr(bc3, browser, None)
+    if loader is None:
+        print(f"  Unknown browser '{browser}'. Try: chrome, firefox, edge, brave, safari.")
+        return None
+    try:
+        jar = loader(domain_name="tiktok.com")
+        pairs = [f"{c.name}={c.value}" for c in jar]
+        return "; ".join(pairs) if pairs else None
+    except Exception as e:
+        print(f"  Couldn't read {browser} cookies ({type(e).__name__}); "
+              "make sure you're logged into TikTok in that browser.")
+        return None
+
+
+def _read_session():
+    """Optional TikTok session for reading accounts behind audience controls
+    (e.g. the 18+ setting). Returns (cookie_header, sessionid), either may be
+    None. Sources, in order: TIKTOK_COOKIE env, TIKTOK_SESSIONID env,
+    TIKTOK_COOKIES_FROM_BROWSER env (your own browser's login, read locally),
+    then a local gitignored tiktok_session.txt. Read once and cached. Used only
+    in memory; never stored, logged, printed, or committed to the repo."""
+    global _session_value, _session_read
+    if _session_read:
+        return _session_value
+    result = (None, None)
+    cookie = os.environ.get("TIKTOK_COOKIE", "").strip()
+    sid = os.environ.get("TIKTOK_SESSIONID", "").strip()
+    browser = os.environ.get("TIKTOK_COOKIES_FROM_BROWSER", "").strip().lower()
+    if cookie:
+        result = (cookie, None)
+    elif sid:
+        result = (None, sid)
+    elif browser:
+        bc = _cookies_from_browser(browser)
+        if bc:
+            result = (bc, None)
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tiktok_session.txt")
+        try:
+            with open(path, encoding="utf-8") as f:
+                val = f.read().strip()
+        except OSError:
+            val = ""
+        if val:
+            # A pasted full Cookie header has "name=value; ..."; a bare sessionid
+            # doesn't. Handle either form.
+            if ";" in val or val.lower().startswith("sessionid="):
+                result = (val, None)
+            else:
+                result = (None, val)
+    _session_value = result
+    _session_read = True
+    return result
+
+
+def use_browser_session(browser):
+    """Turn on the browser-login source at runtime (for the app's guided
+    unlock): set it, clear the cached session, and report whether a TikTok
+    login was actually found. Never raises, never exposes the cookie."""
+    global _session_read, _session_value
+    os.environ["TIKTOK_COOKIES_FROM_BROWSER"] = browser
+    _session_read = False
+    _session_value = (None, None)
+    cookie, sid = _read_session()
+    return bool(cookie or sid)
+
+
+def _session_configured():
+    """True if the user has provided an optional session (only used to word the
+    message on a gated account, never to reveal the session itself)."""
+    cookie, sid = _read_session()
+    return bool(cookie or sid)
+
+
 def new_session():
     s = requests.Session()
     s.headers.update({"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
+    # Opt-in unlock for accounts behind TikTok's audience controls (e.g. the
+    # "18 and older" setting), which a logged-out request can't read. The session
+    # is read only at runtime and attached to this in-memory session; it is never
+    # written to a report, a log, or the screen. Normal public accounts need none
+    # of this. Use a throwaway account, never your main one (see the README).
+    cookie, sid = _read_session()
+    # Attach the login as tiktok.com-scoped cookies in the jar, never as a blanket
+    # Cookie header. The same session also probes the OSINT platforms (youtube,
+    # github, archive.org, ...), and a blanket header would send your TikTok login
+    # to every one of them. Scoped jar cookies are only ever sent to tiktok.com.
+    if cookie:
+        for part in cookie.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if name and sep:
+                s.cookies.set(name, value, domain=".tiktok.com")
+    elif sid:
+        s.cookies.set("sessionid", sid, domain=".tiktok.com")
     return s
 
 
@@ -716,13 +898,9 @@ def show(data, indent="    "):
                 print(Fore.YELLOW + f"{indent}🟡 profile found, but TikTok didn't return a creation "
                       f"date (and the user ID isn't a decodable timestamp).")
     elif data.get("type") == "limited":
-        u = data.get("username")
-        if data.get("name_hidden"):
-            print(Fore.CYAN + f"{indent}🔵 @{u} exists, but its display name is hidden or blank. "
-                  "No creation date is available for this kind of account; view it on tiktok.com.")
-        else:
-            print(Fore.CYAN + f"{indent}🔵 @{u} exists (name: {data.get('nickname')}). "
-                  "No creation date available; view it on tiktok.com.")
+        who, hint = limited_lines(data)
+        print(Fore.CYAN + f"{indent}🔵 {who} is a real account.")
+        print(Fore.WHITE + f"{indent}   {hint}")
     elif data.get("type") == "video":
         print(Fore.GREEN + f"{indent}📅 uploaded: {data['uploaded']}")
     else:

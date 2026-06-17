@@ -19,7 +19,7 @@ fi
 # exact versions, so future PyPI churn or typo-squats can't slip in).
 "$PY" - <<'CHECK' 2>/dev/null || "$PY" -m pip install -q -r "$DIR/requirements.txt"
 import importlib.util as u, sys
-sys.exit(0 if all(u.find_spec(m) for m in ("requests", "colorama", "rich")) else 1)
+sys.exit(0 if all(u.find_spec(m) for m in ("requests", "colorama", "rich", "browser_cookie3")) else 1)
 CHECK
 
 "$PY" "$DIR/tiktok_ui.py" "$@"

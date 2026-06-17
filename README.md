@@ -17,10 +17,13 @@
 ## ✨ What it does
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
+  <p align="center"><img src="assets/account.png" alt="account lookup result" width="660"></p>
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
-- **Optional OSINT pivots** (opt in): the same name checked on YouTube (the one platform that gives an honest yes/no), the same name as *unconfirmed* leads on Instagram / X / Twitch / Reddit (those can't be verified without logging in, so they're never shown as accounts it found), a Google Lens reverse image search of the avatar, the profile's bio link, and a Wayback Machine snapshot of the profile. Everything shows in full, nothing is downloaded, and only `http(s)` links are clickable.
+- **Optional OSINT pivots** (opt in): checks the same handle across YouTube, GitHub, Linktree, Snapchat, SoundCloud, Patreon, Tumblr, and Roblox, and shows only the ones that really exist, as plain text since a shared handle may be a different person. Plus the profile's own bio link, a Google Lens search of its avatar, and a Wayback Machine snapshot when one exists. Platforms that can't be verified without a login are left out instead of guessed, nothing is downloaded, and only the profile's own links open on a click.
   <p align="center"><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
-- **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and handle / display-name changes that can hint at a rebrand, sale, or takeover.
+  <p align="center"><img src="assets/noresults.png" alt="OSINT output when no other accounts match the handle" width="660"></p>
+- **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and recent handle or display name changes, shown as neutral context rather than accusations.
+  <p align="center"><img src="assets/flags.png" alt="integrity flags on a bought-follower account" width="660"></p>
 - **Reports** saved to `reports/` as JSON and TXT.
 - A clean terminal UI, or a single command. No RapidAPI, no key, no card.
 
@@ -64,7 +67,25 @@ In the interactive UI, a short numbered menu appears after each card so you can 
 
 ## 🔍 How it works
 
-TikTok embeds the account `createTime` in the JSON on every public profile page, so one request to the profile is enough to read it. Video IDs are snowflakes, so a video's upload time comes from `id >> 32`. No login, no third party API.
+TikTok embeds the account `createTime` in the JSON on every public profile page, so one request to the profile is enough to read it. Video IDs are snowflakes, so a video's upload time comes from `id >> 32`. No login and no third party API for public accounts, which is almost all of them.
+
+## 🔒 Accounts with audience controls on (optional)
+
+A few accounts turn on TikTok's audience controls, for example the "18 and older" setting. TikTok then refuses to show that profile to anyone who is not signed in, so a normal lookup gets no date or stats back. That is the account owner's setting, not a limit of this tool, and most accounts have it off and need nothing.
+
+<p align="center"><img src="assets/locked.png" alt="a locked account before unlocking" width="660"></p>
+
+You can still read these with your own TikTok login, and there is nothing to install or paste. Just look the account up in the app. When it is locked, it asks:
+
+```
+read it with  chrome / firefox / edge / brave / safari
+```
+
+Pick the browser you are already signed into TikTok on, and it reads the account with that login. If you are not signed in, it just tells you to sign in and try again, no errors and no dead ends.
+
+Your privacy, plainly: the login is read only on your own computer, only for that one lookup. It is never saved, never sent anywhere, never shown, and never part of this code, so a clone or a fork has nothing of yours in it. Your account stays yours, and everyone uses their own login, or none at all.
+
+Prefer the command line? Set `TIKTOK_COOKIES_FROM_BROWSER=chrome` (or `firefox`, `edge`, `brave`, `safari`) before running, or drop your `sessionid` value into a gitignored `tiktok_session.txt`.
 
 ## 📦 Requirements
 

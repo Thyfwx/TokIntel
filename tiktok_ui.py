@@ -26,14 +26,14 @@ from rich.text import Text
 from rich.align import Align
 from rich.prompt import Prompt
 from rich.markup import escape
-from rich.style import Style
 from rich import box
 
 # Reuse the validated lookup engine living next to this file.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    probe_pivots, human_age, _pivot_section, _is_web_url,
+    probe_pivots, human_age, grouped_pivots, limited_lines,
+    use_browser_session, _session_configured,
 )
 
 console = Console()
@@ -68,20 +68,6 @@ def _safe(value):
     return escape(str(value).translate(_CTRL_BYTES))
 
 
-def _safe_link(url, text=None):
-    """A clickable cell built as a styled Text (not markup), so a hostile bio
-    link or avatar URL can't break out of [link=...] or smuggle terminal
-    escapes. Visible text defaults to the URL; pass `text` for a clean label.
-    Only http(s) URLs are made clickable; any other scheme (file:, smb:,
-    mailto:, a custom app scheme) is shown as plain text so a single click
-    can't open it. The link target is set via a Style object, never string-parsed."""
-    clean_url = str(url).translate(_CTRL_BYTES)
-    label = str(text).translate(_CTRL_BYTES) if text is not None else clean_url
-    if not _is_web_url(clean_url):
-        return Text(label)
-    return Text(label, style=Style(link=clean_url))
-
-
 def header():
     # TikTok-style wordmark: cyan on the left, white core, red on the right.
     w = max(len(line) for line in TT_LOGO)
@@ -114,8 +100,8 @@ def render_account(d):
     tbl.add_column(style="white")
     if d.get("nickname"):
         tbl.add_row("Name", _safe(d["nickname"]))
-    tbl.add_row("Verified", "✅ yes" if d.get("verified") else "no")
-    tbl.add_row("Private", "🔒 yes" if d.get("private") else "no")
+    tbl.add_row("Verified", "[green]yes[/]" if d.get("verified") else "no")
+    tbl.add_row("Private", "[yellow]yes[/]" if d.get("private") else "no")
     tbl.add_row("Followers", num(d.get("followers")))
     tbl.add_row("Following", num(d.get("following")))
     tbl.add_row("Likes", num(d.get("likes")))
@@ -156,28 +142,17 @@ def render(data):
     elif data.get("type") == "account":
         render_account(data)
     elif data.get("type") == "limited":
-        u = _safe(data.get("username"))
-        if data.get("name_hidden"):
-            line = f"@{u} is a real account with a hidden or blank display name."
-        else:
-            line = f"@{u} is a real account (display name: {_safe(data.get('nickname'))})."
-        render_simple("found · limited info", line,
-                      note="A creation date isn't available for this kind of account. "
-                           "Open it on tiktok.com to see the profile.",
-                      color="cyan")
+        # username / nickname inside `who` are already control-byte-stripped at the
+        # source (fetch_user runs them through _clean), and render_simple prints via
+        # Text(), which never interprets Rich markup, so this can't inject styling.
+        who, hint = limited_lines(data)
+        render_simple("found · audience controls", f"{who} is a real account.",
+                      note=hint, color="cyan")
     elif data.get("type") == "video":
         render_simple("video", f"📅  uploaded {data.get('uploaded')}",
                       note="video upload time, not account creation")
     else:
         render_simple("id decode", f"📅  {data.get('decoded')}", note=data.get("note"))
-
-
-_STATUS_BADGE = {
-    "exists":  "[green]✓[/]",
-    "missing": "[red]✗[/]",
-    "unknown": "[yellow]?[/]",
-    None:      " ",
-}
 
 
 def render_pivots(data):
@@ -186,36 +161,37 @@ def render_pivots(data):
         console.print("[dim]   no pivots available for this result[/]")
         return
 
-    # HEAD-check the cross-platform probes in parallel; total wait ≈ 1s.
-    with console.status("[cyan]checking platforms…[/]", spinner="dots"):
-        probed = probe_pivots(pivots)
+    with console.status("[cyan]checking…[/]", spinner="dots"):
+        own, same_name, found_handle = grouped_pivots(probe_pivots(pivots), data.get("bio_link"))
 
-    # Group the pivots under plain headings, and show each as a full, visible
-    # URL. The URL itself is the clickable hyperlink in any terminal that
-    # supports OSC 8 links, and because it shows in full it also stays readable,
-    # copyable, and auto-detectable as a link in terminals that don't.
-    by_section, order = {}, []
-    for label, url, status in probed:
-        sect = _pivot_section(label)
-        if sect not in by_section:
-            by_section[sect] = []
-            order.append(sect)
-        by_section[sect].append((label, url, status))
-
-    blocks = []
-    for sect in order:
+    def group_table(items):
         tbl = Table.grid(padding=(0, 2))
-        tbl.add_column(justify="center", no_wrap=True, width=2)            # ✓ / ✗
         tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)   # label
-        tbl.add_column(style="white", overflow="fold")                    # visible URL
-        for label, url, status in by_section[sect]:
-            value = (Text("no account with this name", style="yellow")
-                     if status == "missing" else _safe_link(url))
-            tbl.add_row(_STATUS_BADGE[status], label, value)
-        blocks += [Text(sect, style="dim"), tbl, Text("")]
+        tbl.add_column(overflow="fold")                                   # full URL
+        for i, (label, url, _) in enumerate(items):
+            if i:
+                tbl.add_row("", "")   # a little breathing room between links
+            # A plain full URL to copy or open; never made clickable.
+            tbl.add_row(label, Text(str(url).translate(_CTRL_BYTES)))
+        return tbl
+
+    # The profile's own links and any account confirmed through its bio go first,
+    # then the same handle found on other sites. Misses are left out entirely.
+    blocks = []
+    if own:
+        blocks += [Text("From this profile", style="dim"), group_table(own)]
+    if same_name:
+        if blocks:
+            blocks.append(Text(""))
+        blocks += [Text("Same handle on other sites", style="dim"), group_table(same_name)]
+    elif not found_handle:
+        if blocks:
+            blocks.append(Text(""))
+        blocks += [Text("Same handle on other sites", style="dim"),
+                   Text("  Nothing found with this handle", style="yellow")]
 
     console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
-                        subtitle="[dim]click any link to open it · ✓ found · ✗ no account[/]",
+                        subtitle="[dim]links shown in full · copy to open[/]",
                         subtitle_align="left",
                         border_style=TIKTOK_CYAN, box=box.ROUNDED, padding=(1, 2)))
 
@@ -224,14 +200,12 @@ def render_flags(data):
     flags = integrity_flags(data)
     if not flags:
         return
-    style = {"warn": ("⚠️ ", "yellow"), "info": ("ℹ️ ", "cyan"), "ok": ("✅", "green")}
+    color = {"warn": "yellow", "info": "cyan", "ok": "green"}
     body = Text()
     for i, (sev, msg) in enumerate(flags):
-        icon, color = style.get(sev, ("·", "white"))
         if i:
             body.append("\n")
-        body.append(f"{icon} ", style=color)
-        body.append(msg)
+        body.append(msg, style=color.get(sev, "white"))
     border = "yellow" if any(s == "warn" for s, _ in flags) else (
              "cyan" if any(s == "info" for s, _ in flags) else "green")
     console.print(Panel(body, title="[bold]🚩 Integrity flags[/]",
@@ -272,6 +246,85 @@ def extras_menu(data):
     return False
 
 
+_BROWSERS = ("chrome", "firefox", "edge", "brave", "safari", "chromium", "opera", "vivaldi")
+
+
+def _installed_browsers():
+    """The browsers we support that actually look installed on this machine, so
+    the unlock prompt only offers real choices. Best-effort, cross-platform."""
+    import shutil
+    home = os.path.expanduser("~")
+    found = []
+    if sys.platform == "darwin":
+        apps = {"chrome": "Google Chrome.app", "firefox": "Firefox.app",
+                "edge": "Microsoft Edge.app", "brave": "Brave Browser.app",
+                "opera": "Opera.app", "vivaldi": "Vivaldi.app", "chromium": "Chromium.app"}
+        for name, app in apps.items():
+            if os.path.exists(f"/Applications/{app}") or os.path.exists(f"{home}/Applications/{app}"):
+                found.append(name)
+        if os.path.exists("/Applications/Safari.app"):
+            found.append("safari")
+    elif sys.platform.startswith("win"):
+        bases = [os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""),
+                 os.environ.get("LOCALAPPDATA", "")]
+        rels = {"chrome": r"Google\Chrome\Application\chrome.exe",
+                "edge": r"Microsoft\Edge\Application\msedge.exe",
+                "brave": r"BraveSoftware\Brave-Browser\Application\brave.exe",
+                "firefox": r"Mozilla Firefox\firefox.exe",
+                "opera": r"Opera\launcher.exe", "vivaldi": r"Vivaldi\Application\vivaldi.exe"}
+        for name, rel in rels.items():
+            if any(b and os.path.exists(os.path.join(b, rel)) for b in bases):
+                found.append(name)
+    else:
+        bins = {"chrome": ("google-chrome", "google-chrome-stable", "chrome"),
+                "chromium": ("chromium", "chromium-browser"), "firefox": ("firefox",),
+                "brave": ("brave-browser", "brave"),
+                "edge": ("microsoft-edge", "microsoft-edge-stable"),
+                "opera": ("opera",), "vivaldi": ("vivaldi", "vivaldi-stable")}
+        for name, names in bins.items():
+            if any(shutil.which(b) for b in names):
+                found.append(name)
+    return found
+
+
+def offer_unlock(entry, data, session):
+    """When a locked (audience-controls) account comes back and no login is set
+    yet, offer to read it with the user's own browser login right here, no env
+    var or README needed. Returns (data, session): re-fetched and unlocked if it
+    worked, otherwise unchanged. The cookie is read locally and never shown."""
+    if not (isinstance(data, dict) and data.get("type") == "limited"):
+        return data, session
+    if _session_configured():
+        return data, session
+    browsers = _installed_browsers() or list(_BROWSERS)
+    console.print(
+        "\n  [dim]This one is locked. If you are signed into TikTok in a browser on this\n"
+        "  computer, the tool can read it with that login. The login is used only on your\n"
+        "  machine, only for this lookup, and is never saved, sent anywhere, or shared. Your\n"
+        "  computer may ask you to approve reading your browser cookies, that is normal, click Allow.[/]")
+    while True:
+        try:
+            pick = Prompt.ask(
+                f"  [dim]read it with[/] [{TIKTOK_CYAN}]{' / '.join(browsers)}[/]"
+                " [dim](or Enter to skip)[/]", default="", show_default=False).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return data, session
+        if pick not in browsers:
+            return data, session
+        with console.status(f"[cyan]reading your {pick} login…[/]", spinner="dots"):
+            ok = use_browser_session(pick)
+        if ok:
+            break
+        console.print(
+            f"  [yellow]No TikTok login found in {pick}. Open TikTok in {pick} and sign in,\n"
+            f"  then type {pick} again to try once more[/] [dim](or Enter to skip).[/]")
+    session = new_session()
+    with console.status(f"[cyan]reading {entry} with your login…[/]", spinner="dots"):
+        _, data = lookup(entry, session)
+    render(data)
+    return data, session
+
+
 def main():
     console.clear()
     header()
@@ -296,6 +349,7 @@ def main():
             with console.status(f"[cyan]Fetching {entry}…[/]", spinner="dots"):
                 _, data = lookup(entry, session)
             render(data)
+            data, session = offer_unlock(entry, data, session)
             if extras_menu(data):        # True means the user asked to quit
                 break
             results.append({"target": entry, "data": data})

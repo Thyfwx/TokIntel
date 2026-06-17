@@ -10,9 +10,15 @@ __pycache__/
 
 # Configuration and Credentials (CRITICAL)
 .env
+# Optional TikTok session for reading accounts with audience controls on.
+# Holds a login token, treat it like a password. Never commit it.
+tiktok_session.txt
 
 # Research Reports (DO NOT UPLOAD)
 reports/
+
+# Local MCP scratch folder, not part of this project
+memory-bank/
 
 # macOS Finder metadata
 .DS_Store
