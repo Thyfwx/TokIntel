@@ -32,7 +32,7 @@ from rich import box
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tiktok_created import (  # noqa: E402
     lookup, new_session, save_reports, osint_pivots, integrity_flags,
-    probe_pivots, human_age, grouped_pivots, limited_lines,
+    resolve_pivots, human_age, limited_lines,
     use_browser_session, _session_configured,
 )
 
@@ -156,39 +156,33 @@ def render(data):
 
 
 def render_pivots(data):
-    pivots = osint_pivots(data)
-    if not pivots:
+    if not osint_pivots(data):
         console.print("[dim]   no pivots available for this result[/]")
         return
 
     with console.status("[cyan]checking…[/]", spinner="dots"):
-        own, same_name, found_handle = grouped_pivots(probe_pivots(pivots), data.get("bio_link"))
+        finders, shared = resolve_pivots(data)
 
     def group_table(items):
         tbl = Table.grid(padding=(0, 2))
         tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)   # label
         tbl.add_column(overflow="fold")                                   # full URL
-        for i, (label, url, _) in enumerate(items):
+        for i, (label, url) in enumerate(items):
             if i:
                 tbl.add_row("", "")   # a little breathing room between links
             # A plain full URL to copy or open; never made clickable.
             tbl.add_row(label, Text(str(url).translate(_CTRL_BYTES)))
         return tbl
 
-    # The profile's own links and any account confirmed through its bio go first,
-    # then the same handle found on other sites. Misses are left out entirely.
+    # The ways to find their other accounts lead (they work for any account),
+    # then the accounts they actually link to themselves when those exist.
     blocks = []
-    if own:
-        blocks += [Text("From this profile", style="dim"), group_table(own)]
-    if same_name:
+    if finders:
+        blocks += [Text("Find their other accounts", style="dim"), group_table(finders)]
+    if shared:
         if blocks:
             blocks.append(Text(""))
-        blocks += [Text("Same handle on other sites", style="dim"), group_table(same_name)]
-    elif not found_handle:
-        if blocks:
-            blocks.append(Text(""))
-        blocks += [Text("Same handle on other sites", style="dim"),
-                   Text("  Nothing found with this handle", style="yellow")]
+        blocks += [Text("Links they share", style="dim"), group_table(shared)]
 
     console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
                         subtitle="[dim]links shown in full · copy to open[/]",

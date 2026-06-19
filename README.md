@@ -14,20 +14,31 @@
 
 ---
 
-## ✨ What it does
+## What it does
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
-  <p align="center"><img src="assets/account.png" alt="account lookup result" width="660"></p>
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
-- **Optional OSINT pivots** (opt in): checks the same handle across YouTube, GitHub, Linktree, Snapchat, SoundCloud, Patreon, Tumblr, and Roblox, and shows only the ones that really exist, as plain text since a shared handle may be a different person. Plus the profile's own bio link, a Google Lens search of its avatar, and a Wayback Machine snapshot when one exists. Platforms that can't be verified without a login are left out instead of guessed, nothing is downloaded, and only the profile's own links open on a click.
-  <p align="center"><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
-  <p align="center"><img src="assets/noresults.png" alt="OSINT output when no other accounts match the handle" width="660"></p>
+- **Optional OSINT pivots** (opt in): real leads to find a person's other accounts, never a guess. For any account it gives you the finders that always work: a reverse image search of the avatar (find the same face anywhere online), a web search of the exact handle, and a Wayback snapshot when one exists. And it pulls the real accounts they connected themselves: the whole list off a Linktree (or hoo.be, Beacons, Carrd, and similar), the social accounts off a personal website they linked, and any handles they spell out in their bio text ("IG: @them"). A same username existing on some other site is never shown, because that proves nothing about who owns it.
 - **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and recent handle or display name changes, shown as neutral context rather than accusations.
-  <p align="center"><img src="assets/flags.png" alt="integrity flags on a bought-follower account" width="660"></p>
 - **Reports** saved to `reports/` as JSON and TXT.
 - A clean terminal UI, or a single command. No RapidAPI, no key, no card.
 
-## ⬇️ Get it
+<details>
+<summary><b>More screenshots</b></summary>
+
+<br>
+
+<p align="center"><i>A full account lookup</i><br><img src="assets/account.png" alt="account lookup result" width="660"></p>
+
+<p align="center"><i>OSINT pivots: the finders that work for any account, plus the real accounts off their own link-in-bio page</i><br><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
+
+<p align="center"><i>Integrity flags</i><br><img src="assets/flags.png" alt="integrity flags on a bought-follower account" width="660"></p>
+
+<p align="center"><i>An account with audience controls on</i><br><img src="assets/locked.png" alt="a locked account before unlocking" width="660"></p>
+
+</details>
+
+## Get it
 
 **Easiest, no tools needed:** click the green **`< > Code`** button near the top of this page, choose **Download ZIP**, then unzip it.
 
@@ -39,7 +50,7 @@ cd TokIntel
 
 The only thing you need installed yourself is **Python 3.11 or newer** ([get it from python.org](https://www.python.org/downloads/) if you don't have it). Everything else (`requests`, `colorama`, `rich`) is installed for you automatically the first time you run it.
 
-## 🚀 Run it
+## Run it
 
 | Your system | How to start |
 | --- | --- |
@@ -65,15 +76,13 @@ python3 tiktok_created.py charlidamelio --all      # both
 
 In the interactive UI, a short numbered menu appears after each card so you can pull the extras up only when you want them.
 
-## 🔍 How it works
+## How it works
 
 TikTok embeds the account `createTime` in the JSON on every public profile page, so one request to the profile is enough to read it. Video IDs are snowflakes, so a video's upload time comes from `id >> 32`. No login and no third party API for public accounts, which is almost all of them.
 
-## 🔒 Accounts with audience controls on (optional)
+## Accounts with audience controls on (optional)
 
 A few accounts turn on TikTok's audience controls, for example the "18 and older" setting. TikTok then refuses to show that profile to anyone who is not signed in, so a normal lookup gets no date or stats back. That is the account owner's setting, not a limit of this tool, and most accounts have it off and need nothing.
-
-<p align="center"><img src="assets/locked.png" alt="a locked account before unlocking" width="660"></p>
 
 You can still read these with your own TikTok login, and there is nothing to install or paste. Just look the account up in the app. When it is locked, it asks:
 
@@ -83,18 +92,18 @@ read it with  chrome / firefox / edge / brave / safari
 
 Pick the browser you are already signed into TikTok on, and it reads the account with that login. If you are not signed in, it just tells you to sign in and try again, no errors and no dead ends.
 
-Your privacy, plainly: the login is read only on your own computer, only for that one lookup. It is never saved, never sent anywhere, never shown, and never part of this code, so a clone or a fork has nothing of yours in it. Your account stays yours, and everyone uses their own login, or none at all.
+Your privacy, plainly: the login is read only on your own computer, only for that one lookup. It is never saved, sent anywhere, shown, or written into the code, so a clone or a fork has nothing of yours in it.
 
 Prefer the command line? Set `TIKTOK_COOKIES_FROM_BROWSER=chrome` (or `firefox`, `edge`, `brave`, `safari`) before running, or drop your `sessionid` value into a gitignored `tiktok_session.txt`.
 
-## 📦 Requirements
+## Requirements
 
 Python 3.11+ and `requests`, `colorama`, `rich` (installed automatically by the launcher, or `pip install -r requirements.txt`).
 
-## 🙌 Credit
+## Credit
 
 Built on top of [TokIntel](https://github.com/HackUnderway/TokIntel) by Victor Bancayan (Hack Underway). The original does more, including email and phone lookups through RapidAPI. This build is a free option that needs no key, for looking up creation dates. Licensed under MIT, see [LICENSE](LICENSE).
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 For educational and OSINT research only. It reads public profile data. Do not use it for anything illegal.

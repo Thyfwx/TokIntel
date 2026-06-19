@@ -22,10 +22,14 @@ by @Thyfwx.
 """
 import argparse
 import concurrent.futures
+import contextlib
+import html
+import ipaddress
 import json
 import os
 import re
 import random
+import socket
 import string
 import time
 import unicodedata
@@ -34,7 +38,7 @@ try:
 except ImportError:
     readline = None  # Windows without pyreadline; basic input still works
 from datetime import datetime, UTC
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 
@@ -373,12 +377,15 @@ def decode_id(num):
 # ----------------------------------------------------------- OSINT extras
 def osint_pivots(data):
     """Return an ordered list of (label, url) pivots for an account result.
-    URLs only, no fetches happen here: the same handle on platforms we can
-    verify by HTTP (YouTube, GitHub, Linktree, Snapchat, SoundCloud, Patreon,
-    Tumblr, Roblox), a web search of the handle, reverse image searches of the
-    avatar (Google Lens, Yandex, TinEye), the account's own bio link, and its
-    Wayback history. Platforms we can't tell real from fake on without a login
-    (Instagram, X, Twitch, Reddit, ...) are left out instead of guessed."""
+    URLs only, no fetches happen here: the account's own bio link, a web search
+    of the handle, reverse image searches of the avatar (Google Lens, Yandex,
+    TinEye), and its Wayback history.
+
+    There are deliberately no same-handle probes (a GitHub or Snapchat with the
+    same username, etc.). A username existing on another site does not mean it is
+    the same person, so showing it would be a guess dressed up as a finding. The
+    only cross-platform accounts we surface are the real ones the profile links
+    to itself, expanded from its own link-in-bio page (see expand_link_in_bio)."""
     pivots = []
     if not isinstance(data, dict) or data.get("type") != "account":
         return pivots
@@ -391,20 +398,11 @@ def osint_pivots(data):
     # misleading link.
     u = quote(username, safe="") if username else None
 
+    if bio_link:
+        pivots.append(("Bio link", bio_link))
     if username:
-        # Same-name platforms that 404 for a fake handle, so we can verify each
-        # one exists before showing it (see probe_pivots / _PROBE_LABELS). Only
-        # the ones that actually resolve get shown.
-        pivots.append(("YouTube", f"https://www.youtube.com/@{u}"))
-        pivots.append(("GitHub", f"https://github.com/{u}"))
-        pivots.append(("Linktree", f"https://linktr.ee/{u}"))
-        pivots.append(("Snapchat", f"https://www.snapchat.com/add/{u}"))
-        pivots.append(("SoundCloud", f"https://soundcloud.com/{u}"))
-        pivots.append(("Patreon", f"https://www.patreon.com/{u}"))
-        pivots.append(("Tumblr", f"https://www.tumblr.com/{u}"))
-        pivots.append(("Roblox", f"https://www.roblox.com/user.aspx?username={u}"))
         # A web search for the exact handle: surfaces real mentions and linked
-        # accounts across the web, not just same-name guesses.
+        # accounts across the web, for you to judge, not a claim of identity.
         pivots.append(("Google search", f"https://www.google.com/search?q=%22{u}%22"))
     if avatar:
         # Reverse image searches of the avatar. Lens is best for objects, Yandex
@@ -413,8 +411,6 @@ def osint_pivots(data):
         pivots.append(("Google Lens", f"https://lens.google.com/uploadbyurl?url={avq}"))
         pivots.append(("Yandex image", f"https://yandex.com/images/search?rpt=imageview&url={avq}"))
         pivots.append(("TinEye", f"https://tineye.com/search?url={avq}"))
-    if bio_link:
-        pivots.append(("Bio link", bio_link))
     if username:
         # Shown only when a snapshot actually exists (verified in probe_pivots).
         pivots.append(("Wayback", f"https://web.archive.org/web/*/tiktok.com/@{u}"))
@@ -422,66 +418,357 @@ def osint_pivots(data):
     return pivots
 
 
-# Pivots that point at the target itself, kept apart from the same handle on
-# other sites so we never imply a namesake is the same person.
-_OWN_PIVOTS = {"Bio link", "Wayback", "Google Lens", "Yandex image", "TinEye", "Google search"}
+# Only the account's own bio link is a "their link". Everything else osint_pivots
+# emits is a tool you run yourself to verify identity (search, reverse image) or
+# the account's own history (Wayback).
+_THEIR_LINKS = {"Bio link"}
 
-# Host for each same-handle platform. Used to confirm one as really theirs when
-# the account's own bio link points to it (the owner linked it themselves).
-_PLATFORM_HOST = {
-    "YouTube": "youtube.com", "GitHub": "github.com", "Linktree": "linktr.ee",
-    "Snapchat": "snapchat.com", "SoundCloud": "soundcloud.com",
-    "Patreon": "patreon.com", "Tumblr": "tumblr.com", "Roblox": "roblox.com",
+
+# The one pivot still worth a network check before showing: Wayback, verified
+# through the availability API. Nothing else is probed, because a username merely
+# resolving on another site is not evidence it is the same person.
+_PROBE_LABELS = {"Wayback"}
+
+
+# ----------------------------------------------------- link-in-bio expansion
+# Pages whose whole purpose is to list a person's own accounts. We only ever
+# fetch these known hosts, never an arbitrary bio link, so a hostile profile
+# can't steer the fetch at some other target. The links found on such a page
+# were put there by the owner, so they are real, not a same-name guess.
+_LINK_IN_BIO_HOSTS = {
+    "linktr.ee", "linktree.com", "beacons.ai", "beacons.page", "allmylinks.com",
+    "bio.link", "solo.to", "lnk.bio", "linkin.bio", "komi.io", "hoo.be",
+    "snipfeed.co", "tap.bio", "milkshake.app", "shor.by", "stan.store",
+    "carrd.co", "campsite.bio", "many.link", "pillar.io", "withkoji.com", "msha.ke",
+}
+
+# Hosts that appear on aggregator pages but are not the person's accounts: the
+# aggregator's own marketing, app stores, share widgets, fonts, trackers, CDNs.
+_AGG_NOISE_HOSTS = {
+    "google.com", "googletagmanager.com", "google-analytics.com",
+    "googleapis.com", "gstatic.com", "schema.org", "w3.org", "apple.com",
+    "play.google.com", "apps.apple.com", "amazonaws.com", "cloudfront.net",
+    "jsdelivr.net", "linktree.com", "about.me", "sentry.io", "cookiebot.com",
+    "cloudflare.com", "cloudflareinsights.com", "fontawesome.com",
+    # Pure affiliate / click-tracking redirectors, not the person's accounts.
+    "linksynergy.com", "kqzyfj.com", "dpbolvw.net", "anrdoezrs.net",
+    "tkqlhce.com", "pxf.io", "sjv.io", "go.redirectingat.com", "go2cloud.org",
+    "thanks.is", "amplify.ai", "shopstyle.it", "rstyle.me",
+}
+
+_HOST_LABEL = {
+    "instagram.com": "Instagram", "youtube.com": "YouTube", "youtu.be": "YouTube",
+    "twitter.com": "X", "x.com": "X", "github.com": "GitHub", "twitch.tv": "Twitch",
+    "tiktok.com": "TikTok", "snapchat.com": "Snapchat", "facebook.com": "Facebook",
+    "open.spotify.com": "Spotify", "spotify.com": "Spotify", "soundcloud.com": "SoundCloud",
+    "patreon.com": "Patreon", "discord.gg": "Discord", "discord.com": "Discord",
+    "onlyfans.com": "OnlyFans", "cash.app": "Cash App", "venmo.com": "Venmo",
+    "paypal.com": "PayPal", "pinterest.com": "Pinterest", "reddit.com": "Reddit",
+    "threads.net": "Threads", "tumblr.com": "Tumblr", "depop.com": "Depop",
+    "etsy.com": "Etsy", "amazon.com": "Amazon", "ko-fi.com": "Ko-fi",
+    "linkedin.com": "LinkedIn", "kick.com": "Kick", "substack.com": "Substack",
 }
 
 
-def grouped_pivots(probed, bio_link=None):
-    """Split probed pivots for display. Returns (own, same_name, found_handle):
-      own         : the target's own links, its bio link, Wayback snapshot, avatar
-                    reverse image search, plus any same-handle account the profile
-                    itself links to from its bio (so we know it really is them).
-      same_name   : the same handle found on other platforms that we can't tie to
-                    this person, so a possible namesake.
-      found_handle: whether the handle turned up on any other platform at all.
-    Only confirmed or resolving links are returned; misses are dropped."""
-    bio_host = ""
-    if bio_link:
+def _host_of(url):
+    """Bare registrable-ish host for a URL, lowercased, no leading www."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _label_for_link(url):
+    """A friendly platform name for a destination URL, else its bare host."""
+    host = _host_of(url)
+    for h, name in _HOST_LABEL.items():
+        if host == h or host.endswith("." + h):
+            return name
+    return host or "link"
+
+
+def _safe_resolve(hostname):
+    """Resolve a host and return one validated public IP for it, or None if it does
+    not resolve or any of its addresses is private, loopback, link-local (incl. the
+    cloud metadata 169.254.169.254), reserved, multicast, or unspecified.
+
+    Returning the vetted IP lets the caller connect to exactly that address. That
+    closes the DNS-rebinding window: without it, the host is resolved once here and
+    then a second, independent time by requests at connect, and an attacker who
+    controls DNS with a low TTL could answer the first lookup with a public IP and
+    the second with an internal one."""
+    if not hostname:
+        return None
+    try:
+        infos = socket.getaddrinfo(hostname, 443, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return None
+    chosen = None
+    for info in infos:
+        ip = info[4][0]
         try:
-            bio_host = (urlparse(bio_link).hostname or "").lower()
-            if bio_host.startswith("www."):
-                bio_host = bio_host[4:]
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        if (addr.is_private or addr.is_loopback or addr.is_link_local or
+                addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return None
+        if chosen is None:
+            chosen = ip
+    return chosen
+
+
+@contextlib.contextmanager
+def _pinned_dns(hostname, ip):
+    """Force every resolution of `hostname` to the one pre-validated public `ip` for
+    the duration of one request, so a rebinding attacker can't swap in an internal
+    address between the check and requests' connect. Safe here because the bio-link
+    fetch path runs sequentially, never alongside another resolution in-process."""
+    real = socket.getaddrinfo
+
+    def pinned(host, *args, **kwargs):
+        return real(ip if host == hostname else host, *args, **kwargs)
+
+    socket.getaddrinfo = pinned
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = real
+
+
+def _allow_listed_host(host):
+    """The matching aggregator base host for `host`, or None."""
+    return next((h for h in _LINK_IN_BIO_HOSTS
+                 if host == h or host.endswith("." + h)), None)
+
+
+def _is_account_host(host):
+    """True if the host is a recognized social / content account platform."""
+    return any(host == h or host.endswith("." + h) for h in _HOST_LABEL)
+
+
+def _extract_destination_links(page, self_host, accounts_only=False):
+    """Pull outbound links out of a page's HTML. Reads URL values from the page's
+    embedded JSON first (where Linktree, Beacons, and friends keep the link list),
+    then falls back to anchor hrefs. Skips the page's own host, known marketing /
+    asset / tracker hosts, and asset files, and dedupes by host+path.
+
+    With accounts_only set (a page that is not itself a link-in-bio aggregator,
+    e.g. a personal site), only links to recognized account platforms or to
+    another link-in-bio page are kept, so an ordinary site's nav and press links
+    don't masquerade as someone's accounts. Capped so a noisy page can't flood."""
+    found, seen = [], set()
+
+    def add(raw):
+        if not isinstance(raw, str):
+            return
+        # Undo the escapes these URLs carry inside embedded page data
+        # (& -> &, & -> &, \/ -> /), so the link is the real one you'd copy.
+        url = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), raw.strip())
+        url = html.unescape(url.replace("\\/", "/"))
+        if not re.match(r"(?i)^https://", url):
+            return
+        host = _host_of(url)
+        if not host or host == self_host or host.endswith("." + self_host):
+            return
+        if any(host == n or host.endswith("." + n) for n in _AGG_NOISE_HOSTS):
+            return
+        if re.search(r"\.(?:css|js|png|jpe?g|svg|webp|gif|ico|woff2?|ttf|mp4|json|xml)(?:\?|#|$)", url, re.I):
+            return
+        if accounts_only and not (_is_account_host(host) or _allow_listed_host(host)):
+            return
+        key = host + (urlparse(url).path or "").rstrip("/")
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(url)
+
+    for m in re.finditer(r'"(?:url|originalUrl|href|link|destination)"\s*:\s*"(https:\\?/\\?/[^"]+)"', page):
+        add(m.group(1))
+    if not found:
+        for m in re.finditer(r'href=["\'](https://[^"\']+)["\']', page):
+            add(m.group(1))
+    return found[:15]
+
+
+def _fetch_public_html(url, session):
+    """SSRF-safe GET of an https page. Follows up to two redirects, re-validating
+    each hop: https only, and the host must resolve to a public IP, never private,
+    loopback, link-local, or the cloud metadata address. The body is size-capped
+    and only text/html is read. Returns (final_url, html) or (None, None)."""
+    cur = url
+    for _ in range(3):
+        p = urlparse(cur)
+        ip = _safe_resolve(p.hostname)
+        if p.scheme.lower() != "https" or not ip:
+            return None, None
+        try:
+            # Connect to the exact IP we just vetted, never a re-resolved one.
+            with _pinned_dns(p.hostname, ip):
+                r = session.get(cur, timeout=6, allow_redirects=False, stream=True,
+                                headers={"Accept": "text/html"})
+                if r.status_code in (301, 302, 303, 307, 308):
+                    loc = r.headers.get("Location", "")
+                    r.close()
+                    cur = urljoin(cur, loc)
+                    continue
+                if r.status_code != 200 or "html" not in r.headers.get("Content-Type", "").lower():
+                    r.close()
+                    return None, None
+                chunks, total = [], 0
+                for chunk in r.iter_content(8192):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > 512_000:          # cap the body at ~500 KB
+                        break
+                r.close()
+                return cur, b"".join(chunks).decode("utf-8", "replace")
         except Exception:
-            bio_host = ""
-    own, same_name, found_handle = [], [], False
-    for label, url, status in probed:
-        if label in _OWN_PIVOTS:
-            # Bio link and Google Lens always apply; Wayback only when a real
-            # snapshot is confirmed (its availability API rate-limits and can
-            # fail, so we never claim a 'none' we might be wrong about).
-            if label == "Wayback" and status != "exists":
+            return None, None
+    return None, None
+
+
+def expand_link_in_bio(bio_link, session=None):
+    """Follow the link in someone's bio and return the real accounts it leads to,
+    as (label, url). Honest by construction: every account comes from a page the
+    owner themselves linked, never from guessing a username elsewhere.
+
+    A link-in-bio page (Linktree, hoo.be, Beacons, ...) is read in full, every
+    account the owner listed. Any other site they linked (a personal site, a music
+    smart-link, ...) is read too, but only its links to recognized account
+    platforms are kept, so an ordinary site's nav and press links aren't mistaken
+    for accounts; and if it points at the owner's own link-in-bio page, that is
+    opened one more hop. A direct profile on a big platform (a YouTube or Instagram
+    bio link) is never scraped for "their other accounts", because such a page's
+    links are the platform's own chrome, not the person's; it just stands as the
+    one account they linked. Pages that hide links behind JavaScript yield nothing,
+    never junk.
+
+    Safe by construction: only https, every hop's host must resolve to a public IP,
+    at most a few small pages are read, and nothing is ever auto-opened."""
+    if not _is_web_url(bio_link):
+        return []
+    sess = session or new_session()
+    out, seen_acct, fetched = [], set(), set()
+
+    def harvest(url, hops):
+        if hops > 2 or len(fetched) >= 4 or url in fetched:
+            return
+        host = _host_of(url)
+        is_agg = bool(_allow_listed_host(host))
+        # Never scrape a big-platform profile page; its links are platform chrome.
+        if not is_agg and _is_account_host(host):
+            return
+        fetched.add(url)
+        final, page = _fetch_public_html(url, sess)
+        if not page:
+            return
+        for dest in _extract_destination_links(page, _host_of(final or url), accounts_only=not is_agg):
+            dhost = _host_of(dest)
+            if _allow_listed_host(dhost) and hops < 2:
+                harvest(dest, hops + 1)          # follow a nested link-in-bio page
                 continue
-            own.append((label, url, status))
-        elif status == "exists":
-            found_handle = True
-            host = _PLATFORM_HOST.get(label, "")
-            # If the profile's own bio link points to this platform, the owner
-            # linked it themselves, so it is confirmed theirs, not a namesake.
-            confirmed = bool(host and bio_host and
-                             (bio_host == host or bio_host.endswith("." + host)))
-            (own if confirmed else same_name).append((label, url, status))
-    return own, same_name, found_handle
+            key = dhost + (urlparse(dest).path or "").rstrip("/")
+            if key not in seen_acct:
+                seen_acct.add(key)
+                out.append((_label_for_link(dest), dest))
+
+    try:
+        harvest(bio_link, 0)
+    except Exception:
+        pass
+    return out[:12]
 
 
-# Platforms we can actually verify before showing a link: they 404 for a fake
-# handle, so the HTTP status is a real yes/no. Wayback is verified through its
-# availability API instead. Platforms that answer the same for real and fake
-# names (login walls, SPA 200s, or blocks) carry no signal and aren't listed.
-# Checked empirically (2026-06):
-#   verifiable -> youtube, github, linktr.ee, snapchat, soundcloud, patreon,
-#                 tumblr, roblox   (404 for a fake handle, 200 for a real one)
-#   no signal  -> instagram, x, twitch, reddit, telegram, steam, pinterest, kick
-_PROBE_LABELS = {"YouTube", "GitHub", "Linktree", "Snapchat", "SoundCloud",
-                 "Patreon", "Tumblr", "Roblox", "Wayback"}
+# Handles a profile spells out in its bio text under a platform label, e.g.
+# "IG: @me", "snap: you". A separator (: or @) after the label is required, so
+# ordinary prose ("a big ...") doesn't trip it. A bare @mention is deliberately
+# not matched: on TikTok it points back at another TikTok user, not proof of an
+# account elsewhere.
+_BIO_LABEL_PATTERNS = [
+    (re.compile(r'(?:^|[\s|·•,/\-])(?:instagram|insta|ig)\s*[:@]+\s*@?([a-zA-Z0-9._]{2,30})', re.I),
+     "Instagram", "https://instagram.com/{}"),
+    (re.compile(r'(?:^|[\s|·•,/\-])(?:snapchat|snap)\s*[:@]+\s*@?([a-zA-Z0-9._\-]{2,30})', re.I),
+     "Snapchat", "https://www.snapchat.com/add/{}"),
+    (re.compile(r'(?:^|[\s|·•,/\-])(?:youtube|yt)\s*[:@]+\s*@?([a-zA-Z0-9._\-]{2,30})', re.I),
+     "YouTube", "https://www.youtube.com/@{}"),
+    (re.compile(r'(?:^|[\s|·•,/\-])twitch\s*[:@]+\s*@?([a-zA-Z0-9_]{2,25})', re.I),
+     "Twitch", "https://www.twitch.tv/{}"),
+    (re.compile(r'(?:^|[\s|·•,/\-])twitter\s*[:@]+\s*@?([a-zA-Z0-9_]{2,15})', re.I),
+     "X", "https://x.com/{}"),
+]
+
+# Words that follow a platform label but aren't a handle, so we don't turn
+# "IG: business inquiries" into an account.
+_BIO_STOPWORDS = {"com", "net", "org", "the", "and", "for", "dm", "dms", "me", "my",
+                  "business", "inquiries", "inquiry", "only", "new", "live", "now",
+                  "real", "official", "email", "gmail", "yahoo", "contact", "link",
+                  "below", "here", "follow", "soon", "coming"}
+
+
+def _accounts_from_bio_text(bio, session=None):
+    """Accounts a profile names in its bio TEXT itself, apart from the bio-link
+    field: full URLs they wrote out (a link-in-bio URL is followed like any other;
+    a recognized account URL is taken as is), and handles they label with a
+    platform ("IG: @x"). All owner-declared, so honest, no guessing."""
+    if not isinstance(bio, str) or not bio:
+        return []
+    sess = session or new_session()
+    out = []
+    for m in re.finditer(r'https?://\S+', bio):
+        url = m.group(0).rstrip('.,);:]"\'')
+        if not _is_web_url(url):
+            continue
+        host = _host_of(url)
+        if _is_account_host(host) and not _allow_listed_host(host):
+            out.append((_label_for_link(url), url))      # a direct account link they wrote
+        else:
+            out.extend(expand_link_in_bio(url, session=sess))   # aggregator / personal site
+    for rx, label, tmpl in _BIO_LABEL_PATTERNS:
+        for m in rx.finditer(bio):
+            handle = m.group(1).strip('._-')
+            if 2 <= len(handle) <= 30 and handle.lower() not in _BIO_STOPWORDS:
+                out.append((label, tmpl.format(quote(handle, safe=''))))
+    return out
+
+
+def resolve_pivots(data, session=None):
+    """Do the network work for pivots and return two display groups:
+      finders : the always-available ways to find a person's other accounts, for
+                any account at all: a reverse image search of the avatar (find the
+                same face anywhere online), a web search of the exact handle, and
+                the account's Wayback history when a snapshot exists. These make
+                no claim of their own; they are leads you follow and confirm.
+      shared  : the bio link, the accounts off the profile's own bio link (its
+                link-in-bio page or personal site), and any accounts named in the
+                bio text. All owner-declared, deduped, shown only when they exist.
+    Same-handle guesses are never produced, by design."""
+    sess = session or new_session()
+    probed = probe_pivots(osint_pivots(data), session=sess)
+    finders, shared, seen = [], [], set()
+
+    def add_shared(label, url):
+        host = _host_of(url)
+        key = host + (urlparse(url).path or "").rstrip("/")
+        if key in seen:
+            return
+        seen.add(key)
+        shared.append((label, url))
+
+    for label, url, status in probed:
+        if label == "Wayback":
+            if status == "exists":               # never claim a 'none' we might be wrong about
+                finders.append((label, url))
+        elif label in _THEIR_LINKS:
+            add_shared(label, url)
+        else:
+            finders.append((label, url))
+    for label, url in expand_link_in_bio(data.get("bio_link"), session=sess):
+        add_shared(label, url)
+    for label, url in _accounts_from_bio_text(data.get("bio"), session=sess):
+        add_shared(label, url)
+    return finders, shared[:14]
 
 
 def probe_pivots(pivots, session=None):
@@ -637,33 +924,28 @@ def integrity_flags(data):
 
 
 def print_pivots_plain(data, session=None):
-    """Plain-text pivots for CLI mode, in two groups: the target's own links
-    (bio link, Wayback snapshot, avatar reverse image search, plus any same-handle
-    account confirmed through their bio), then the same handle found on other
-    sites. Links are shown as full URLs to copy or open, nothing is made
-    clickable. Anything we couldn't confirm or that didn't resolve is left out."""
-    pivots = osint_pivots(data)
-    if not pivots:
+    """Plain-text pivots for CLI mode, in two groups: the ways to find a person's
+    other accounts (reverse image search, handle web search, Wayback), shown for
+    every account, then the accounts they actually link to themselves (bio link
+    and anything on their own link-in-bio page) when those exist. Links are shown
+    as full URLs to copy or open, never made clickable. No same-handle guesses."""
+    if not osint_pivots(data):
         return
     print(Fore.CYAN + "    🧭 OSINT pivots  " + Fore.WHITE + "(checking…)")
-    own, same_name, found_handle = grouped_pivots(
-        probe_pivots(pivots, session=session), data.get("bio_link"))
+    finders, shared = resolve_pivots(data, session=session)
 
     def show(group):
-        for i, (label, url, _) in enumerate(group):
+        for i, (label, url) in enumerate(group):
             if i:
                 print()   # a little breathing room between links
             print(Fore.WHITE + f"       {label:<12} {url.translate(_CTRL_BYTES)}")
 
-    if own:
-        print(Fore.CYAN + "\n    From this profile")
-        show(own)
-    if same_name:
-        print(Fore.CYAN + "\n    Same handle on other sites")
-        show(same_name)
-    elif not found_handle:
-        print(Fore.CYAN + "\n    Same handle on other sites")
-        print(Fore.YELLOW + "       Nothing found with this handle")
+    if finders:
+        print(Fore.CYAN + "\n    Find their other accounts")
+        show(finders)
+    if shared:
+        print(Fore.CYAN + "\n    Links they share")
+        show(shared)
 
 
 def print_flags_plain(data):
