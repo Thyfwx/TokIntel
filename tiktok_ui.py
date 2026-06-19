@@ -161,7 +161,7 @@ def render_pivots(data):
         return
 
     with console.status("[cyan]checking…[/]", spinner="dots"):
-        finders, shared = resolve_pivots(data)
+        finders, shared, web = resolve_pivots(data)
 
     def group_table(items):
         tbl = Table.grid(padding=(0, 2))
@@ -174,15 +174,27 @@ def render_pivots(data):
             tbl.add_row(label, Text(str(url).translate(_CTRL_BYTES)))
         return tbl
 
-    # The ways to find their other accounts lead (they work for any account),
-    # then the accounts they actually link to themselves when those exist.
+    # The accounts they link to themselves come first (most certain), then the
+    # same-handle profiles a web search of the handle turned up, then the tools to
+    # verify identity yourself.
     blocks = []
-    if finders:
-        blocks += [Text("Find their other accounts", style="dim"), group_table(finders)]
-    if shared:
+    def section(title, items, style="dim"):
+        if not items:
+            return
         if blocks:
             blocks.append(Text(""))
-        blocks += [Text("Links they share", style="dim"), group_table(shared)]
+        blocks.extend([Text(title, style=style), group_table(items)])
+
+    section("Links they share  ·  confirmed", shared, style="green")
+    if web:
+        section("Same username elsewhere  ·  unverified, check the photo", web, style="yellow")
+    elif data.get("username"):
+        if blocks:
+            blocks.append(Text(""))
+        blocks.append(Text("Same username elsewhere", style="yellow"))
+        blocks.append(Text("  checked the major platforms and a web search, "
+                           "nothing else found under this handle", style="dim"))
+    section("Verify it's really them  ·  searches you run, not auto-results", finders, style="dim")
 
     console.print(Panel(Group(*blocks), title="[bold]🧭 OSINT pivots[/]",
                         subtitle="[dim]links shown in full · copy to open[/]",
@@ -230,13 +242,16 @@ def extras_menu(data):
         return True
     if choice in {"q", "quit", "exit"}:
         return True
-    if choice == "1":
-        render_pivots(data)
-    elif choice == "2":
-        render_flags(data)
-    elif choice == "3":
-        render_flags(data)
-        render_pivots(data)
+    # Clear and re-show the account card before the extras, so each result is a
+    # clean, self-contained view that starts at the top instead of stacking under
+    # old prompts (which left you scrolling all the way up to find it).
+    if choice in {"1", "2", "3"}:
+        console.clear()
+        render_account(data)
+        if choice in {"1", "3"}:
+            render_pivots(data)
+        if choice in {"2", "3"}:
+            render_flags(data)
     return False
 
 

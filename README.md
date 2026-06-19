@@ -18,7 +18,10 @@
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
-- **Optional OSINT pivots** (opt in): real leads to find a person's other accounts, never a guess. For any account it gives you the finders that always work: a reverse image search of the avatar (find the same face anywhere online), a web search of the exact handle, and a Wayback snapshot when one exists. And it pulls the real accounts they connected themselves: the whole list off a Linktree (or hoo.be, Beacons, Carrd, and similar), the social accounts off a personal website they linked, and any handles they spell out in their bio text ("IG: @them"). A same username existing on some other site is never shown, because that proves nothing about who owns it.
+- **Optional OSINT pivots** (opt in), in three honest layers:
+  - **Links they share** (confirmed): the bio link, the whole list off their own Linktree (or hoo.be, Beacons, Carrd, a personal website), handles they spell out in their bio text, and any same-handle account whose page **links back to this TikTok**, which proves it's them, along with the accounts that page lists.
+  - **Same username elsewhere** (unverified): the exact handle checked on the platforms that reliably tell a real account from a fake (GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin, Flickr), plus a keyless web search. Marked unverified, since a shared handle can belong to a different person, so check the photo. If nothing turns up, it says so.
+  - **Verify it's really them**: a reverse image search of the avatar (Yandex, to find the same face online), a web search of the handle, and a Wayback snapshot when one exists.
 - **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and recent handle or display name changes, shown as neutral context rather than accusations.
 - **Reports** saved to `reports/` as JSON and TXT.
 - A clean terminal UI, or a single command. No RapidAPI, no key, no card.
