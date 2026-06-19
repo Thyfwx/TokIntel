@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/license-MIT-3FB950" alt="MIT License">
 </p>
 
-<p align="center">Find when a TikTok account was created. No API key, no signup, just a username.</p>
+<p align="center">Look up any TikTok account: its creation date, its stats, and the real accounts behind the person.<br>No API key, no signup, just a username.</p>
 
 ---
 
@@ -33,7 +33,7 @@
 
 <p align="center"><i>A full account lookup</i><br><img src="assets/account.png" alt="account lookup result" width="660"></p>
 
-<p align="center"><i>OSINT pivots: the finders that work for any account, plus the real accounts off their own link-in-bio page</i><br><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
+<p align="center"><i>OSINT pivots: confirmed accounts in green, unverified same-username leads in yellow, and tools to verify the person</i><br><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
 
 <p align="center"><i>Integrity flags</i><br><img src="assets/flags.png" alt="integrity flags on a bought-follower account" width="660"></p>
 
