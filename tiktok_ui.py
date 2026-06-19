@@ -83,7 +83,7 @@ def header():
     tag.append("♪ ", style=TIKTOK_CYAN)
     tag.append("Account Lookup", style="bold white")
     tag.append(" ♪", style=TIKTOK_RED)
-    sub = Text("creation date, stats, and the real person behind any TikTok  ·  no API key",
+    sub = Text("when was this account created?  ·  no API key needed",
                style="dim italic", justify="center")
     credit = Text("part of TokIntel · by Hack Underway · contributed by @Thyfwx",
                   style="dim", justify="center")
