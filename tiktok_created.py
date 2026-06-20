@@ -24,6 +24,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import html
+import io
 import ipaddress
 import json
 import os
@@ -548,6 +549,31 @@ def _is_account_host(host):
     return any(host == h or host.endswith("." + h) for h in _HOST_LABEL)
 
 
+def _is_content_not_account(host, path):
+    """True for links that are a single piece of CONTENT (a video, playlist, track,
+    album) rather than an account/profile, so they aren't listed as 'their YouTube'
+    when they're really just a video they linked. Keeps account discovery to actual
+    accounts."""
+    p = (path or "").lower()
+    if host == "youtu.be":
+        return True                                      # always a single video
+    if host == "youtube.com":
+        return not re.match(r"^/(@|channel/|c/|user/)", p)   # only channels are accounts
+    if host in ("spotify.com", "open.spotify.com"):
+        return bool(re.match(r"^/(track|album|playlist|episode)/", p))
+    if host == "instagram.com":
+        return bool(re.match(r"^/(p|reel|reels|tv|stories)/", p))   # a post/reel, not the profile
+    if host == "tiktok.com":
+        return "/video/" in p                            # a single TikTok, not the profile
+    if host in ("x.com", "twitter.com"):
+        return "/status/" in p                           # a tweet, not the account
+    if host == "facebook.com":
+        return bool(re.search(r"/(posts|photos|videos|story\.php|permalink)", p))
+    if host == "reddit.com":
+        return "/comments/" in p                         # a thread, not the user
+    return False
+
+
 def _extract_destination_links(page, self_host):
     """Pull outbound links out of a page's HTML. Reads URL values from the page's
     embedded JSON first (where Linktree, Beacons, and friends keep the link list),
@@ -574,6 +600,8 @@ def _extract_destination_links(page, self_host):
             return
         # The allowlist: a known platform, or a link-in-bio page (followed, not shown).
         if not (_is_account_host(host) or _allow_listed_host(host)):
+            return
+        if _is_content_not_account(host, urlparse(url).path):   # a video/track, not an account
             return
         if re.search(r"\.(?:css|js|png|jpe?g|svg|webp|gif|ico|woff2?|ttf|mp4|json|xml)(?:\?|#|$)", url, re.I):
             return
@@ -826,6 +854,87 @@ def _same_handle_probes(username, session=None):
         return [r for r in ex.map(check, cands) if r]
 
 
+# Photo-match: an optional, automated identity check. If a same-handle candidate's
+# profile photo is the same image as the TikTok avatar, it is provably the same
+# person. Needs Pillow (the launcher installs it); without it, photo-match is simply
+# skipped and the other verification paths still work. Images are read in memory and
+# discarded, never saved to disk.
+try:
+    from PIL import Image as _PILImage
+except Exception:
+    _PILImage = None
+
+_PHOTO_MATCH_MAX = 10        # max perceptual-hash distance to call it the same photo
+
+
+def _dhash(img_bytes, size=8):
+    """A difference perceptual hash of an image: robust to resize/re-encode, so the
+    same photo served at different sizes still matches. None if Pillow is missing or
+    the bytes aren't a readable image."""
+    if _PILImage is None or not img_bytes:
+        return None
+    try:
+        im = _PILImage.open(io.BytesIO(img_bytes)).convert("L").resize((size + 1, size))
+        px = im.tobytes()                        # one byte per grayscale pixel, row-major
+        bits = 0
+        for r in range(size):
+            row = r * (size + 1)
+            for c in range(size):
+                bits = (bits << 1) | (1 if px[row + c] < px[row + c + 1] else 0)
+        return bits
+    except Exception:
+        return None
+
+
+def _hamming(a, b):
+    return bin(a ^ b).count("1")
+
+
+def _fetch_image_bytes(url, session):
+    """SSRF-guarded fetch of an image, read into memory and never written to disk.
+    Follows up to two redirects, re-validating EACH hop (https only, host resolves
+    to a public IP, pinned for the connect), so a redirect can't slip past the check
+    to an internal host. Content-type must be an image; size-capped. Returns bytes
+    or None."""
+    if not _is_web_url(url):
+        return None
+    cur = url
+    for _ in range(3):
+        p = urlparse(cur)
+        ip = _safe_resolve(p.hostname)
+        if p.scheme.lower() != "https" or not ip:
+            return None
+        try:
+            with _pinned_dns(p.hostname, ip):
+                r = session.get(cur, timeout=6, stream=True, allow_redirects=False)
+                if r.status_code in (301, 302, 303, 307, 308):
+                    loc = r.headers.get("Location", "")
+                    r.close()
+                    cur = urljoin(cur, loc)
+                    continue
+                if r.status_code != 200 or "image" not in r.headers.get("Content-Type", "").lower():
+                    r.close()
+                    return None
+                chunks, total = [], 0
+                for chunk in r.iter_content(16384):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > 3_000_000:        # 3 MB cap
+                        break
+                r.close()
+                return b"".join(chunks)
+        except Exception:
+            return None
+    return None
+
+
+def _og_image(page):
+    """The og:image (profile photo for link previews) declared on a page, or None."""
+    m = (re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)', page, re.I)
+         or re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image', page, re.I))
+    return html.unescape(m.group(1)) if m else None
+
+
 def _acct_key(url):
     """A loose identity key for an account URL, (host, normalized handle), so the
     same account written slightly differently still matches across sources."""
@@ -835,13 +944,15 @@ def _acct_key(url):
     return (host, handle)
 
 
-def _verify_same_handle(candidates, username, anchors=None, session=None):
+def _verify_same_handle(candidates, username, anchors=None, subject_hash=None, session=None):
     """Try to PROVE a same-handle candidate is really them by fetching its page and
-    cross-referencing: it counts as proven if the page links back to the subject's
-    TikTok, OR links to one of their already-confirmed accounts (the anchors). Either
-    is the owner tying their accounts together. Returns (verified_urls, extras):
-    confirmed-theirs candidate URLs, and the other real accounts those pages list.
-    A JS-walled page just yields nothing. Fixed platform hosts, so no SSRF surface."""
+    checking three ways: it counts as proven if the page links back to the subject's
+    TikTok, OR links to one of their already-confirmed accounts (the anchors), OR its
+    profile photo is the SAME image as the TikTok avatar (perceptual-hash match, when
+    Pillow is available and an avatar was read). Any of the three is the owner tying
+    their accounts together. Returns (verified_urls, extras): confirmed-theirs
+    candidate URLs, and the other real accounts those pages list. A JS-walled page
+    just yields nothing. Fixed platform hosts, so no SSRF surface."""
     if not (candidates and username):
         return set(), []
     sess = session or new_session()
@@ -859,11 +970,19 @@ def _verify_same_handle(candidates, username, anchors=None, session=None):
                      for m in re.finditer(r"tiktok\.com/@([\w.\-]+)", page, re.I))
         if not proven:
             proven = any(_acct_key(u) in anchors for u in urls)               # links a known account
+        # Same profile photo? Only when the subject's avatar has real detail, so a
+        # blank / default / near-empty picture can't match another blank one.
+        if not proven and subject_hash is not None and bin(subject_hash).count("1") >= 8:
+            og = _og_image(page)
+            cand_hash = _dhash(_fetch_image_bytes(og, sess)) if og else None
+            if (cand_hash is not None and bin(cand_hash).count("1") >= 8
+                    and _hamming(subject_hash, cand_hash) <= _PHOTO_MATCH_MAX):
+                proven = True
         if proven:
             return (url, [(_label_for_link(u), u) for u in urls])
         return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(candidates))) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(candidates))) as ex:
         for res in ex.map(probe, candidates):
             if res:
                 verified.add(res[0])
@@ -928,19 +1047,37 @@ def resolve_pivots(data, session=None):
     for label, url in _search_handle_accounts(username, session=sess):
         add_cand(label, url)
 
-    # Promote any candidate whose page backlinks to this TikTok OR links to an
-    # account already confirmed theirs, and pull the accounts those proven pages
-    # list. The rest stay unverified.
+    # Promote any candidate whose page backlinks to this TikTok, links to an account
+    # already confirmed theirs, or uses the SAME profile photo as this TikTok, and
+    # pull the accounts those proven pages list. The rest stay unverified.
     anchors = {_acct_key(u) for _, u in shared if _host_of(u)}
-    verified, extras = _verify_same_handle(candidates, username, anchors=anchors, session=sess)
-    web = []
+    subject_hash = _dhash(_fetch_image_bytes(data.get("avatar"), sess)) if data.get("avatar") else None
+    verified, extras = _verify_same_handle(candidates, username, anchors=anchors,
+                                           subject_hash=subject_hash, session=sess)
     for label, url in candidates:
         if url in verified:
             add_shared(label, url)
-        else:
-            web.append((label, url))
     for label, url in extras:
         add_shared(label, url)
+    # Whatever's left over is unverified, deduped against EVERYTHING now confirmed
+    # (incl. accounts pulled off the proven pages), so nothing shows in both groups.
+    web, wseen = [], set()
+    for label, url in candidates:
+        if url in verified:
+            continue
+        key = _host_of(url) + (urlparse(url).path or "").rstrip("/")
+        if key in seen or key in wseen:
+            continue
+        wseen.add(key)
+        web.append((label, url))
+
+    # A blank / solid-color / near-empty avatar makes a reverse image search useless,
+    # so drop the by-face finders for it (the handle search and Wayback still stand).
+    # subject_hash is None when we couldn't read the avatar, in which case we leave
+    # the finders alone rather than hide them on a guess.
+    if subject_hash is not None and bin(subject_hash).count("1") < 8:
+        blank_face = {"Yandex (by face)", "Google Lens"}
+        finders = [(l, u) for l, u in finders if l not in blank_face]
 
     return finders, shared[:18], web[:16]
 

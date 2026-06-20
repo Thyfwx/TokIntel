@@ -3,3 +3,5 @@ colorama==0.4.6
 rich==15.0.0
 # reads your own browser's TikTok login for the optional unlock (audience-control accounts)
 browser-cookie3==0.20.1
+# perceptual-hashes avatars to confirm a same-handle account by matching the photo
+Pillow==12.2.0

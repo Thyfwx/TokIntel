@@ -16,7 +16,7 @@ if not exist "venv\Scripts\python.exe" (
     )
 )
 
-venv\Scripts\python.exe -c "import importlib.util as u,sys;sys.exit(0 if all(u.find_spec(m) for m in ('requests','colorama','rich','browser_cookie3')) else 1)" 2>nul || venv\Scripts\python.exe -m pip install -q -r requirements.txt
+venv\Scripts\python.exe -c "import importlib.util as u,sys;sys.exit(0 if all(u.find_spec(m) for m in ('requests','colorama','rich','browser_cookie3','PIL')) else 1)" 2>nul || venv\Scripts\python.exe -m pip install -q -r requirements.txt
 
 venv\Scripts\python.exe tiktok_ui.py %*
 pause

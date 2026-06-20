@@ -19,9 +19,9 @@
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
 - **Optional OSINT pivots** (opt in), in three honest layers:
-  - **Links they share** (confirmed): the bio link, the whole list off their own Linktree (or hoo.be, Beacons, Carrd, a personal website), handles they spell out in their bio text, and any same-handle account whose page **links back to this TikTok**, which proves it's them, along with the accounts that page lists.
-  - **Same username elsewhere** (unverified): the exact handle checked on the platforms that reliably tell a real account from a fake (GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin, Flickr), plus a keyless web search. Marked unverified, since a shared handle can belong to a different person, so check the photo. If nothing turns up, it says so.
-  - **Verify it's really them**: a reverse image search of the avatar (Yandex, to find the same face online), a web search of the handle, and a Wayback snapshot when one exists.
+  - **Links they share** (confirmed): the bio link, the whole list off their own Linktree (or hoo.be, Beacons, Carrd, a personal website), handles they spell out in their bio text, and any same-handle account the tool can **prove** is them, by its page linking back to this TikTok, linking to another already-confirmed account, or **using the same profile photo** (matched automatically, never on a blank or default picture), along with the accounts that page lists.
+  - **Same username elsewhere** (unverified): the exact handle checked on the platforms that reliably tell a real account from a fake (GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin, Flickr), plus a keyless web search. Marked unverified, since a shared handle can belong to a different person, so check the photo. If nothing turns up, it says so. Only real accounts are listed, never a single video, post, or tweet someone linked.
+  - **Verify it's really them**: a reverse image search of the avatar (Yandex, to find the same face online), a web search of the handle, and a Wayback snapshot when one exists. (The face search is hidden when the avatar is blank, since there's nothing to match.)
 - **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and recent handle or display name changes, shown as neutral context rather than accusations.
 - **Reports** saved to `reports/` as JSON and TXT.
 - A clean terminal UI, or a single command. No RapidAPI, no key, no card.
@@ -51,7 +51,7 @@ git clone https://github.com/Thyfwx/TokIntel.git
 cd TokIntel
 ```
 
-The only thing you need installed yourself is **Python 3.11 or newer** ([get it from python.org](https://www.python.org/downloads/) if you don't have it). Everything else (`requests`, `colorama`, `rich`) is installed for you automatically the first time you run it.
+The only thing you need installed yourself is **Python 3.11 or newer** ([get it from python.org](https://www.python.org/downloads/) if you don't have it). Everything else it needs is installed for you automatically the first time you run it.
 
 ## 🚀 Run it
 
@@ -61,7 +61,7 @@ The only thing you need installed yourself is **Python 3.11 or newer** ([get it 
 | **Windows** | double click `start.bat` |
 | **Linux / any terminal** | run `./start.sh` |
 
-The launcher builds its own virtual environment and installs `requests`, `colorama`, and `rich` on first run, so there is nothing to set up by hand.
+The launcher builds its own virtual environment and installs everything it needs on first run, so there is nothing to set up by hand.
 
 > **macOS:** if you downloaded the ZIP and a double-click is blocked ("unidentified developer"), right-click `TokIntel.app` → **Open** → **Open** once, and it will trust it from then on. Cloning with git avoids this entirely.
 
@@ -101,7 +101,7 @@ Prefer the command line? Set `TIKTOK_COOKIES_FROM_BROWSER=chrome` (or `firefox`,
 
 ## 📦 Requirements
 
-Python 3.11+ and `requests`, `colorama`, `rich` (installed automatically by the launcher, or `pip install -r requirements.txt`).
+Python 3.11+. Everything else (`requests`, `colorama`, `rich`, `browser-cookie3` for the 18+ unlock, and `Pillow` for the photo-match) is installed automatically by the launcher, or with `pip install -r requirements.txt`.
 
 ## 🙌 Credit
 
