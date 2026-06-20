@@ -14,7 +14,7 @@
 
 ---
 
-## What it does
+## 🔎 What it does
 
 - **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
 - **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
@@ -41,7 +41,7 @@
 
 </details>
 
-## Get it
+## ⬇️ Get it
 
 **Easiest, no tools needed:** click the green **`< > Code`** button near the top of this page, choose **Download ZIP**, then unzip it.
 
@@ -53,7 +53,7 @@ cd TokIntel
 
 The only thing you need installed yourself is **Python 3.11 or newer** ([get it from python.org](https://www.python.org/downloads/) if you don't have it). Everything else (`requests`, `colorama`, `rich`) is installed for you automatically the first time you run it.
 
-## Run it
+## 🚀 Run it
 
 | Your system | How to start |
 | --- | --- |
@@ -79,11 +79,11 @@ python3 tiktok_created.py charlidamelio --all      # both
 
 In the interactive UI, a short numbered menu appears after each card so you can pull the extras up only when you want them.
 
-## How it works
+## ⚙️ How it works
 
 TikTok embeds the account `createTime` in the JSON on every public profile page, so one request to the profile is enough to read it. Video IDs are snowflakes, so a video's upload time comes from `id >> 32`. No login and no third party API for public accounts, which is almost all of them.
 
-## Accounts with audience controls on (optional)
+## 🔒 Accounts with audience controls on (optional)
 
 A few accounts turn on TikTok's audience controls, for example the "18 and older" setting. TikTok then refuses to show that profile to anyone who is not signed in, so a normal lookup gets no date or stats back. That is the account owner's setting, not a limit of this tool, and most accounts have it off and need nothing.
 
@@ -99,14 +99,14 @@ Your privacy, plainly: the login is read only on your own computer, only for tha
 
 Prefer the command line? Set `TIKTOK_COOKIES_FROM_BROWSER=chrome` (or `firefox`, `edge`, `brave`, `safari`) before running, or drop your `sessionid` value into a gitignored `tiktok_session.txt`.
 
-## Requirements
+## 📦 Requirements
 
 Python 3.11+ and `requests`, `colorama`, `rich` (installed automatically by the launcher, or `pip install -r requirements.txt`).
 
-## Credit
+## 🙌 Credit
 
-Built on top of [TokIntel](https://github.com/HackUnderway/TokIntel) by Victor Bancayan (Hack Underway). The original does more, including email and phone lookups through RapidAPI. This build is a free option that needs no key, for looking up creation dates. Licensed under MIT, see [LICENSE](LICENSE).
+Built on top of [TokIntel](https://github.com/HackUnderway/TokIntel) by Victor Bancayan (Hack Underway). The original does email and phone lookups through RapidAPI. This build goes a different way: no key at all, for looking up an account and finding the real person behind it. Licensed under MIT, see [LICENSE](LICENSE).
 
-## Disclaimer
+## ⚠️ Disclaimer
 
 For educational and OSINT research only. It reads public profile data. Do not use it for anything illegal.
