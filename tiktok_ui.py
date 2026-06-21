@@ -167,11 +167,16 @@ def render_pivots(data):
         tbl = Table.grid(padding=(0, 2))
         tbl.add_column(justify="right", style=TIKTOK_CYAN, no_wrap=True)   # label
         tbl.add_column(overflow="fold")                                   # full URL
-        for i, (label, url) in enumerate(items):
+        for i, row in enumerate(items):
+            label, url = row[0], row[1]
+            note = row[2] if len(row) > 2 else ""
             if i:
                 tbl.add_row("", "")   # a little breathing room between links
             # A plain full URL to copy or open; never made clickable.
-            tbl.add_row(label, Text(str(url).translate(_CTRL_BYTES)))
+            cell = Text(str(url).translate(_CTRL_BYTES))
+            if note:
+                cell.append(f"   ← {note}", style="yellow")
+            tbl.add_row(label, cell)
         return tbl
 
     # The accounts they link to themselves come first (most certain), then the

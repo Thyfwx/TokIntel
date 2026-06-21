@@ -32,6 +32,7 @@ import re
 import random
 import socket
 import string
+import threading
 import time
 import unicodedata
 try:
@@ -520,22 +521,32 @@ def _safe_resolve(hostname):
     return chosen
 
 
+_DNS_PIN_LOCK = threading.Lock()
+
+
 @contextlib.contextmanager
 def _pinned_dns(hostname, ip):
     """Force every resolution of `hostname` to the one pre-validated public `ip` for
     the duration of one request, so a rebinding attacker can't swap in an internal
-    address between the check and requests' connect. Safe here because the bio-link
-    fetch path runs sequentially, never alongside another resolution in-process."""
-    real = socket.getaddrinfo
+    address between the check and requests' connect.
 
-    def pinned(host, *args, **kwargs):
-        return real(ip if host == hostname else host, *args, **kwargs)
+    The pin works by swapping the process-global `socket.getaddrinfo`, so two of
+    these running at once would clobber each other's pin (reopening the rebinding
+    window) and could even leave the global corrupted. The pivot probes fetch
+    candidates from a thread pool, so the lock serializes the pinned region: only
+    one pin is ever live, and the real resolver captured under the lock is never a
+    half-restored one. Correctness over a little parallelism on the fetches."""
+    with _DNS_PIN_LOCK:
+        real = socket.getaddrinfo
 
-    socket.getaddrinfo = pinned
-    try:
-        yield
-    finally:
-        socket.getaddrinfo = real
+        def pinned(host, *args, **kwargs):
+            return real(ip if host == hostname else host, *args, **kwargs)
+
+        socket.getaddrinfo = pinned
+        try:
+            yield
+        finally:
+            socket.getaddrinfo = real
 
 
 def _allow_listed_host(host):
@@ -945,20 +956,29 @@ def _acct_key(url):
 
 
 def _verify_same_handle(candidates, username, anchors=None, subject_hash=None, session=None):
-    """Try to PROVE a same-handle candidate is really them by fetching its page and
-    checking three ways: it counts as proven if the page links back to the subject's
-    TikTok, OR links to one of their already-confirmed accounts (the anchors), OR its
-    profile photo is the SAME image as the TikTok avatar (perceptual-hash match, when
-    Pillow is available and an avatar was read). Any of the three is the owner tying
-    their accounts together. Returns (verified_urls, extras): confirmed-theirs
-    candidate URLs, and the other real accounts those pages list. A JS-walled page
-    just yields nothing. Fixed platform hosts, so no SSRF surface."""
+    """Fetch each same-handle candidate's page and weigh two kinds of signal.
+
+    PROOF (the owner actively tied the accounts together): the page links back to
+    the subject's TikTok, OR links to one of their already-confirmed accounts (the
+    anchors). Either is something only the owner places, so the candidate is treated
+    as confirmed-theirs and the real accounts that page lists are pulled in too.
+
+    A LEAD, not proof: the candidate's profile photo is the same image as the TikTok
+    avatar (perceptual-hash match). A profile photo is public and copyable, so a
+    same handle plus the same picture is a strong lead but NOT proof of identity -
+    an impostor could lift the avatar. So a photo-only match is never confirmed; it
+    is flagged so the unverified listing can mark it as the stronger lead to check.
+
+    Returns (verified_urls, extras, photo_leads): confirmed-theirs candidate URLs,
+    the other real accounts those proven pages list, and the URLs that matched only
+    on the photo. A JS-walled page just yields nothing. Fixed platform hosts (plus
+    the photo fetch, which is SSRF-guarded)."""
     if not (candidates and username):
-        return set(), []
+        return set(), [], set()
     sess = session or new_session()
     norm = re.sub(r"[._\-]", "", username.lower())
     anchors = anchors or set()
-    verified, extras = set(), []
+    verified, extras, photo_leads = set(), [], set()
 
     def probe(item):
         _, url = item
@@ -970,24 +990,31 @@ def _verify_same_handle(candidates, username, anchors=None, subject_hash=None, s
                      for m in re.finditer(r"tiktok\.com/@([\w.\-]+)", page, re.I))
         if not proven:
             proven = any(_acct_key(u) in anchors for u in urls)               # links a known account
-        # Same profile photo? Only when the subject's avatar has real detail, so a
-        # blank / default / near-empty picture can't match another blank one.
-        if not proven and subject_hash is not None and bin(subject_hash).count("1") >= 8:
+        if proven:
+            return ("proof", url, [(_label_for_link(u), u) for u in urls])
+        # No owner-placed link, so not confirmed. A matching profile photo is a
+        # strong lead but spoofable (the avatar is public), so flag it, don't
+        # confirm. Only when the subject's avatar has real detail, so a blank /
+        # default / near-empty picture can't match another blank one.
+        if subject_hash is not None and bin(subject_hash).count("1") >= 8:
             og = _og_image(page)
             cand_hash = _dhash(_fetch_image_bytes(og, sess)) if og else None
             if (cand_hash is not None and bin(cand_hash).count("1") >= 8
                     and _hamming(subject_hash, cand_hash) <= _PHOTO_MATCH_MAX):
-                proven = True
-        if proven:
-            return (url, [(_label_for_link(u), u) for u in urls])
+                return ("photo", url, None)
         return None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(candidates))) as ex:
         for res in ex.map(probe, candidates):
-            if res:
-                verified.add(res[0])
-                extras.extend(res[1])
-    return verified, extras
+            if not res:
+                continue
+            kind, url, page_accounts = res
+            if kind == "proof":
+                verified.add(url)
+                extras.extend(page_accounts or [])
+            else:
+                photo_leads.add(url)
+    return verified, extras, photo_leads
 
 
 def resolve_pivots(data, session=None):
@@ -1052,8 +1079,8 @@ def resolve_pivots(data, session=None):
     # pull the accounts those proven pages list. The rest stay unverified.
     anchors = {_acct_key(u) for _, u in shared if _host_of(u)}
     subject_hash = _dhash(_fetch_image_bytes(data.get("avatar"), sess)) if data.get("avatar") else None
-    verified, extras = _verify_same_handle(candidates, username, anchors=anchors,
-                                           subject_hash=subject_hash, session=sess)
+    verified, extras, photo_leads = _verify_same_handle(
+        candidates, username, anchors=anchors, subject_hash=subject_hash, session=sess)
     for label, url in candidates:
         if url in verified:
             add_shared(label, url)
@@ -1061,6 +1088,9 @@ def resolve_pivots(data, session=None):
         add_shared(label, url)
     # Whatever's left over is unverified, deduped against EVERYTHING now confirmed
     # (incl. accounts pulled off the proven pages), so nothing shows in both groups.
+    # A same-handle profile whose photo also matches the avatar is the strongest of
+    # the unverified leads (still spoofable, so not confirmed), so it is marked and
+    # floated to the top of the group.
     web, wseen = [], set()
     for label, url in candidates:
         if url in verified:
@@ -1069,7 +1099,9 @@ def resolve_pivots(data, session=None):
         if key in seen or key in wseen:
             continue
         wseen.add(key)
-        web.append((label, url))
+        note = "same photo — strong lead" if url in photo_leads else ""
+        web.append((label, url, note))
+    web.sort(key=lambda row: row[2] == "")   # photo-matched leads first
 
     # A blank / solid-color / near-empty avatar makes a reverse image search useless,
     # so drop the by-face finders for it (the handle search and Wayback still stand).
@@ -1246,10 +1278,13 @@ def print_pivots_plain(data, session=None):
     finders, shared, web = resolve_pivots(data, session=session)
 
     def show(group):
-        for i, (label, url) in enumerate(group):
+        for i, row in enumerate(group):
+            label, url = row[0], row[1]
+            note = row[2] if len(row) > 2 else ""
             if i:
                 print()   # a little breathing room between links
-            print(Fore.WHITE + f"       {label:<12} {url.translate(_CTRL_BYTES)}")
+            print(Fore.WHITE + f"       {label:<12} {url.translate(_CTRL_BYTES)}"
+                  + (Fore.YELLOW + f"   ← {note}" if note else ""))
 
     if shared:
         print(Fore.GREEN + "\n    Links they share  " + Fore.WHITE + "(confirmed)")
@@ -1321,7 +1356,7 @@ def save_reports(results, prefix):
     with open(base + ".txt", "w", encoding="utf-8") as f:
         f.write("TikTok account creation report\n" + "=" * 44 + "\n\n")
         for r in results:
-            f.write(f"Target : {r['target']}\n")
+            f.write(f"Target : {_clean(r['target'])}\n")
             d = r["data"]
             if "error" in d:
                 f.write(f"  ERROR: {d['error']}\n\n")
@@ -1513,7 +1548,7 @@ def run_batch(targets, session, show_osint=False, show_flags=False):
     print(Fore.CYAN + f"\n[+] Targets: {len(targets)}  (free mode, no API key)\n")
     results = []
     for i, target in enumerate(targets, 1):
-        print(Fore.WHITE + f"[{i}/{len(targets)}] {target}")
+        print(Fore.WHITE + f"[{i}/{len(targets)}] {_clean(target)}")
         kind, data = lookup(target, session)
         show(data)
         if data.get("type") == "account":
