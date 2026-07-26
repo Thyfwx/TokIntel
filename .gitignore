@@ -26,3 +26,8 @@ memory-bank/
 # Godot import sidecars (appear if this folder is ever opened inside a Godot project)
 *.import
 .godot/
+
+# local Claude config, never publish
+CLAUDE.md
+.claude/
+Start Claude.command
