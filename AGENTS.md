@@ -20,10 +20,11 @@ Free, keyless TikTok account lookup CLI (creation date and profile details). Pub
 ## Working rules
 - Keep PRs small and focused. Don't bump the version or create releases or tags; the owner maintains one rolling release.
 - Don't add dependencies unless the task requires it, and explain why in the PR.
+- No Co-Authored-By trailers or bot attribution in commit messages.
 
 ## Verify before opening the PR
 - `python -m py_compile tiktok_created.py tiktok_ui.py`
-- Run the tool against a well-known public profile and confirm the output and error handling still work.
+- Run the tool against a well-known public profile, for example `python tiktok_created.py tiktok`, and confirm the output and error handling still work.
 - In the PR description, state exactly what you ran and what you could not verify.
 
 ## On every PR: talk, and keep it green
@@ -32,3 +33,6 @@ Free, keyless TikTok account lookup CLI (creation date and profile details). Pub
 - Every check must pass. If one fails (a red X), open its log, fix the cause, and push again.
 - Never merge, close, or abandon a PR with a failing check. If you can't fix it, leave a comment explaining the failure and what is needed.
 - If the same check already fails on the base branch, say so in a comment and fix it in a separate small PR.
+- If an automated reviewer (for example CodeRabbit) was rate limited or skipped the review, say so in a comment so another reviewer reads it.
+- Never merge a PR, including your own. Only the owner (@Thyfwx) merges.
+- Before a PR is merged or closed, post a final summary comment that mentions @Thyfwx: what changed, how it was verified, the final check status, and anything still open.
