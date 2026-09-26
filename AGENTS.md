@@ -21,3 +21,10 @@ Free, keyless TikTok account lookup CLI (creation date and profile details). Pub
 - `python -m py_compile tiktok_created.py tiktok_ui.py`
 - Run the tool against a well-known public profile and confirm the output and error handling still work.
 - In the PR description, state exactly what you ran and what you could not verify.
+
+## On every PR: talk, and keep it green
+- Keep the PR description current: what changed, how you verified it, and anything still unfinished.
+- Reply to every review comment, and say what you changed in response.
+- Every check must pass. If one fails (a red X), open its log, fix the cause, and push again.
+- Never merge, close, or abandon a PR with a failing check. If you can't fix it, leave a comment explaining the failure and what is needed.
+- If the same check already fails on the base branch, say so in a comment and fix it in a separate small PR.
