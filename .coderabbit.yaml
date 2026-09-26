@@ -1,0 +1,14 @@
+# CodeRabbit: review every PR into any branch (including sandbox), thoroughly,
+# using this repo's AGENTS.md as the rulebook (detected automatically).
+language: en-US
+reviews:
+  profile: assertive
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - ".*"
+knowledge_base:
+  code_guidelines:
+    enabled: true
