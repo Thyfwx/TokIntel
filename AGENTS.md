@@ -2,6 +2,10 @@
 
 Free, keyless TikTok account lookup CLI (creation date and profile details). Public, MIT, forked from HackUnderway.
 
+
+## Branches
+- Base every task on `main`, and open every PR against `main`.
+
 ## Hard rules
 - **Keyless forever:** never add an API key, signup, login, or paid service. That is the point of the tool.
 - Keep the upstream `LICENSE` and the banner credit to HackUnderway.
