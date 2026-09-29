@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""Fail on new AI attribution or invisible Unicode in a proposed Git change.
+"""Check a Git patch and commit records for visible AI attribution.
 
-Checks added source lines and commit metadata between two revisions. It does not
-rewrite history or claim to detect statistical watermarks in generated text.
+Inputs are data files created by the accompanying workflow. This read-only check
+cannot detect provider-controlled statistical watermarks or rewrite Git history.
 """
 
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 import unicodedata
 from pathlib import Path
 
-
 SOURCE_SUFFIXES = {
     ".c", ".cc", ".cpp", ".css", ".go", ".h", ".html", ".java",
-    ".js", ".jsx", ".kt", ".m", ".php", ".py", ".rb", ".rs",
-    ".sh", ".svelte", ".swift", ".ts", ".tsx", ".vue",
+    ".js", ".jsx", ".json", ".kt", ".m", ".md", ".php", ".py",
+    ".rb", ".rs", ".sh", ".sql", ".svelte", ".swift", ".toml",
+    ".ts", ".tsx", ".vue", ".xml", ".yaml", ".yml",
 }
 SOURCE_NAMES = {"Dockerfile", "Makefile", "Justfile"}
 PROVIDER = r"(?:Anthropic|Claude|OpenAI|ChatGPT|Codex|Google AI|Gemini|Copilot|Qwen|Aider)"
@@ -31,57 +30,64 @@ IDENTITY = re.compile(rf"\b{PROVIDER}\b|copilot-swe-agent", re.IGNORECASE)
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def git(*args: str) -> bytes:
-    result = subprocess.run(
-        ["git", *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    return result.stdout
+def new_path(header: str) -> str | None:
+    if not header.startswith("+++ "):
+        return None
+    path = header[4:].strip('"')
+    if path == "/dev/null":
+        return None
+    return path[2:] if path.startswith("b/") else path
 
 
-def source_paths(base: str, head: str):
-    names = git("diff", "--name-only", "-z", "--diff-filter=ACMR", base, head)
-    for raw in names.split(b"\0"):
-        if not raw:
-            continue
-        name = raw.decode("utf-8", "surrogateescape")
-        path = Path(name)
-        if path.suffix.lower() in SOURCE_SUFFIXES or path.name in SOURCE_NAMES:
-            yield name
+def source_path(name: str | None) -> bool:
+    if not name:
+        return False
+    path = Path(name)
+    return path.suffix.lower() in SOURCE_SUFFIXES or path.name in SOURCE_NAMES
 
 
-def check_added_lines(base: str, head: str):
+def inspect_added(name: str, number: int, line: str) -> list[str]:
     findings = []
-    for name in source_paths(base, head):
-        patch = git("diff", "--unified=0", "--no-ext-diff", "--no-color", base, head, "--", name)
-        line_number = 0
-        for line in patch.decode("utf-8", "replace").splitlines():
-            hunk = HUNK.match(line)
-            if hunk:
-                line_number = int(hunk.group(1))
-            elif line.startswith("+") and not line.startswith("+++"):
-                added = line[1:]
-                if ATTRIBUTION.search(added):
-                    findings.append(f"{name}:{line_number}: AI attribution text")
-                points = sorted({ord(char) for char in added if unicodedata.category(char) == "Cf"})
-                if points:
-                    codes = ",".join(f"U+{point:04X}" for point in points)
-                    findings.append(f"{name}:{line_number}: invisible Unicode {codes}")
-                line_number += 1
-            elif line.startswith(" "):
-                line_number += 1
+    if ATTRIBUTION.search(line):
+        findings.append(f"{name}:{number}: AI attribution text")
+    points = sorted({ord(char) for char in line if unicodedata.category(char) == "Cf"})
+    if points:
+        codes = ",".join(f"U+{point:04X}" for point in points)
+        findings.append(f"{name}:{number}: invisible Unicode {codes}")
     return findings
 
 
-def check_commits(base: str, head: str):
+def check_patch(patch: str) -> list[str]:
     findings = []
-    hashes = git("rev-list", f"{base}..{head}").decode("ascii").splitlines()
-    for sha in hashes:
-        metadata = git("show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%B", sha)
-        fields = metadata.decode("utf-8", "replace").split("\0", 4)
-        if len(fields) != 5:
-            raise ValueError(f"could not parse commit {sha[:12]}")
-        authors, message = fields[:4], fields[4]
-        if any(IDENTITY.search(value) for value in authors):
+    name = None
+    number = 0
+    for line in patch.splitlines():
+        if line.startswith("+++ "):
+            name = new_path(line)
+            continue
+        hunk = HUNK.match(line)
+        if hunk:
+            number = int(hunk.group(1))
+            continue
+        if not source_path(name):
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            findings.extend(inspect_added(name, number, line[1:]))
+            number += 1
+        elif line.startswith(" "):
+            number += 1
+    return findings
+
+
+def check_commits(records: str) -> list[str]:
+    findings = []
+    for record in records.split("\0\0"):
+        fields = record.lstrip("\n").split("\0", 5)
+        if len(fields) != 6:
+            continue
+        sha, author, author_email, committer, committer_email, message = fields
+        identities = (author, author_email, committer, committer_email)
+        if any(IDENTITY.search(value) for value in identities):
             findings.append(f"commit {sha[:12]}: AI author or committer identity")
         if any(ATTRIBUTION.search(line) for line in message.splitlines()):
             findings.append(f"commit {sha[:12]}: AI attribution in message")
@@ -90,14 +96,15 @@ def check_commits(base: str, head: str):
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: check_code_attribution.py BASE_SHA HEAD_SHA", file=sys.stderr)
+        print("usage: check_code_attribution.py PATCH_FILE COMMIT_RECORDS_FILE", file=sys.stderr)
         return 2
-    base, head = sys.argv[1:]
     try:
-        findings = check_added_lines(base, head) + check_commits(base, head)
-    except (subprocess.CalledProcessError, ValueError) as error:
-        print(f"Attribution check could not complete: {error}", file=sys.stderr)
+        patch = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+        records = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        print(f"Attribution check could not read its inputs: {error}", file=sys.stderr)
         return 2
+    findings = check_patch(patch) + check_commits(records)
     for finding in findings:
         print(finding)
     if findings:
