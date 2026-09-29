@@ -8,7 +8,6 @@ cannot detect provider-controlled statistical watermarks or rewrite Git history.
 from __future__ import annotations
 
 import re
-import sys
 import unicodedata
 from pathlib import Path
 
@@ -28,6 +27,8 @@ ATTRIBUTION = re.compile(
 )
 IDENTITY = re.compile(rf"\b{PROVIDER}\b|copilot-swe-agent", re.IGNORECASE)
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+PATCH_FILE = Path("/tmp/code-attribution.patch")
+COMMIT_RECORDS_FILE = Path("/tmp/code-attribution.commits")
 
 
 def new_path(header: str) -> str | None:
@@ -95,14 +96,11 @@ def check_commits(records: str) -> list[str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: check_code_attribution.py PATCH_FILE COMMIT_RECORDS_FILE", file=sys.stderr)
-        return 2
     try:
-        patch = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-        records = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+        patch = PATCH_FILE.read_text(encoding="utf-8", errors="replace")
+        records = COMMIT_RECORDS_FILE.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
-        print(f"Attribution check could not read its inputs: {error}", file=sys.stderr)
+        print(f"Attribution check could not read its inputs: {error}")
         return 2
     findings = check_patch(patch) + check_commits(records)
     for finding in findings:

@@ -22,6 +22,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
-          git diff --unified=0 --no-ext-diff --no-color "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/code-attribution.patch"
-          git log --format='%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00%x00' "$BASE_SHA..$HEAD_SHA" > "$RUNNER_TEMP/code-attribution.commits"
-          python3 scripts/check_code_attribution.py "$RUNNER_TEMP/code-attribution.patch" "$RUNNER_TEMP/code-attribution.commits"
+          git diff --unified=0 --no-ext-diff --no-color "$BASE_SHA" "$HEAD_SHA" > /tmp/code-attribution.patch
+          git log --format='%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00%x00' "$BASE_SHA..$HEAD_SHA" > /tmp/code-attribution.commits
+          python3 scripts/check_code_attribution.py
