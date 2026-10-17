@@ -12,7 +12,7 @@ TokIntel looks up a TikTok account from its username and tells you when it was c
 - Reads an account's creation date, followers, likes, bio, verified status and private status. Give it a username, an `@handle` or a profile URL.
 - Reads the upload time of a video from its URL or id.
 - Saves each run to `reports/` as JSON and TXT.
-- Optional pivots (`--osint`): the bio link, links from the account's own Linktree, Beacons, Carrd or personal site, and accounts the tool can confirm belong to the same person because their page links back. It also checks the same username on GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin and Flickr. Those matches are marked unverified, since another person can own the same handle. A match that also uses the same profile photo is marked a strong lead. A photo can be copied, so treat it as a place to look, not proof.
+- Optional pivots (`--osint`): the bio link, links from the account's own Linktree, Beacons, Carrd or personal site, and other accounts whose page links back to this TikTok profile. A link back suggests the accounts are connected; it doesn't prove one person runs both. It also checks the same username on GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin and Flickr. Those matches are marked unverified, since another person can own the same handle. A match that also uses the same profile photo is marked a strong lead. A photo can be copied, so treat it as a place to look, not proof.
 - Optional integrity flags (`--flags`): heuristic signs of bought followers, follow farms, fast growth and recent name changes. They're context, not accusations.
 
 More screenshots: [account lookup](assets/account.png), [pivots](assets/pivots.png), [integrity flags](assets/flags.png), [a locked account](assets/locked.png).
@@ -48,13 +48,13 @@ python3 tiktok_created.py @nasa https://www.tiktok.com/@zachking
 python3 tiktok_created.py charlidamelio --all
 ```
 
-`--osint` and `--flags` add the optional sections, and `--all` turns on both. `--file names.txt` reads one target per line. Install the packages yourself first if you run the script directly: `pip install -r requirements.txt`.
+`--osint` and `--flags` add the optional sections, and `--all` turns on both. `--file names.txt` reads one target per line. Install the packages yourself first if you run the script directly: `python3 -m pip install -r requirements.txt`.
 
 ## Accounts with audience controls
 
 Some accounts use TikTok's audience controls, such as the 18 and older setting. TikTok won't show those profiles to anyone who isn't signed in, so a normal lookup returns nothing for them.
 
-When that happens, the interface asks which browser you're signed in to TikTok on (chrome, firefox, edge, brave or safari) and reads the account with that login. The login is read on your computer for that one lookup. On the command line, set `TIKTOK_COOKIES_FROM_BROWSER=chrome` first, or put your `sessionid` value in a gitignored `tiktok_session.txt`.
+When that happens, the interface asks which browser you're signed in to TikTok on (chrome, firefox, edge, brave or safari) and reads the account with that login. The login is read on your computer for that one lookup. On the command line, set `TIKTOK_COOKIES_FROM_BROWSER=chrome` first, or put your `sessionid` value in a gitignored `tiktok_session.txt`. If `TIKTOK_COOKIE` or `TIKTOK_SESSIONID` is already set in your environment, that login is used first, even when you pick a browser.
 
 ## Limits
 
