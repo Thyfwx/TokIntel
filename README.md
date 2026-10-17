@@ -1,112 +1,69 @@
-<h1 align="center">TokIntel: free TikTok account lookup</h1>
+# TokIntel
 
-<p align="center">
-  <img src="assets/banner.png" alt="TokIntel: free TikTok account lookup" width="660">
-</p>
+TokIntel looks up a TikTok account from its username and tells you when it was created, with no API key and no signup.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/API%20key-not%20needed-25F4EE" alt="No API key">
-  <img src="https://img.shields.io/badge/license-MIT-3FB950" alt="MIT License">
-</p>
+![TokIntel banner](assets/banner.png)
 
-<p align="center">Look up any TikTok account: its creation date, its stats, and the real accounts behind the person.<br>No API key, no signup, just a username.</p>
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![MIT License](https://img.shields.io/badge/license-MIT-3FB950)
 
----
+## What it does
 
-## 🔎 What it does
+- Reads an account's creation date, followers, likes, bio, verified status and private status. Give it a username, an `@handle` or a profile URL.
+- Reads the upload time of a video from its URL or id.
+- Saves each run to `reports/` as JSON and TXT.
+- Optional pivots (`--osint`): the bio link, links from the account's own Linktree, Beacons, Carrd or personal site, and accounts the tool can confirm belong to the same person because their page links back. It also checks the same username on GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin and Flickr. Those matches are marked unverified, since another person can own the same handle. A match that also uses the same profile photo is marked a strong lead. A photo can be copied, so treat it as a place to look, not proof.
+- Optional integrity flags (`--flags`): heuristic signs of bought followers, follow farms, fast growth and recent name changes. They're context, not accusations.
 
-- **Account creation date** from a username, `@handle`, or profile URL, plus followers, likes, bio, verified, and private status.
-- **Video upload time** from a video URL or id (the snowflake timestamp, `id >> 32`).
-- **Optional OSINT pivots** (opt in), in three honest layers:
-  - **Links they share** (confirmed): the bio link, the whole list off their own Linktree (or hoo.be, Beacons, Carrd, a personal website), handles they spell out in their bio text, and any same-handle account the tool can **prove** is them, by its page linking back to this TikTok or to another already-confirmed account (a link the owner actually placed), along with the accounts that page lists.
-  - **Same username elsewhere** (unverified): the exact handle checked on the platforms that reliably tell a real account from a fake (GitHub, YouTube, Snapchat, SoundCloud, Patreon, Tumblr, Roblox, Linktree, Behance, Last.fm, Chess.com, Pastebin, Flickr), plus a keyless web search. Marked unverified, since a shared handle can belong to a different person, so check the photo. When one of these also **uses the same profile photo** as the TikTok (matched automatically, never on a blank or default picture), it's floated to the top and marked a **strong lead** — a public photo can be copied, so it's the best thing to check, not proof. If nothing turns up, it says so. Only real accounts are listed, never a single video, post, or tweet someone linked.
-  - **Verify it's really them**: a reverse image search of the avatar (Yandex, to find the same face online), a web search of the handle, and a Wayback snapshot when one exists. (The face search is hidden when the avatar is blank, since there's nothing to match.)
-- **Optional integrity flags** (opt in): heuristic signals for bought followers, follow farms, rapid growth, and recent handle or display name changes, shown as neutral context rather than accusations.
-- **Reports** saved to `reports/` as JSON and TXT.
-- A clean terminal UI, or a single command. No RapidAPI, no key, no card.
+More screenshots: [account lookup](assets/account.png), [pivots](assets/pivots.png), [integrity flags](assets/flags.png), [a locked account](assets/locked.png).
 
-<details>
-<summary><b>More screenshots</b></summary>
+## How it works
 
-<br>
+TikTok puts the account's `createTime` in the JSON on every public profile page, so one request to the profile is enough. Video ids are snowflakes, so a video's upload time comes from `id >> 32`. For public accounts there's no login and no third party API.
 
-<p align="center"><i>A full account lookup</i><br><img src="assets/account.png" alt="account lookup result" width="660"></p>
+## Install and run
 
-<p align="center"><i>OSINT pivots: confirmed accounts in green, unverified same-username leads in yellow, and tools to verify the person</i><br><img src="assets/pivots.png" alt="OSINT pivots panel" width="660"></p>
+You need Python 3.11 or newer. Clone the repo, or download the ZIP from the Code button:
 
-<p align="center"><i>Integrity flags</i><br><img src="assets/flags.png" alt="integrity flags on a bought-follower account" width="660"></p>
-
-<p align="center"><i>An account with audience controls on</i><br><img src="assets/locked.png" alt="a locked account before unlocking" width="660"></p>
-
-</details>
-
-## ⬇️ Get it
-
-**Easiest, no tools needed:** click the green **`< > Code`** button near the top of this page, choose **Download ZIP**, then unzip it.
-
-**Or with git:**
-```bash
+```sh
 git clone https://github.com/Thyfwx/TokIntel.git
 cd TokIntel
 ```
 
-The only thing you need installed yourself is **Python 3.11 or newer** ([get it from python.org](https://www.python.org/downloads/) if you don't have it). Everything else it needs is installed for you automatically the first time you run it.
+Then start the interface:
 
-## 🚀 Run it
-
-| Your system | How to start |
+| System | How to start |
 | --- | --- |
-| **macOS** | double click `TokIntel.app` (or `TokIntel.command`) |
-| **Windows** | double click `start.bat` |
-| **Linux / any terminal** | run `./start.sh` |
+| macOS | Double click `TokIntel.app` or `TokIntel.command` |
+| Windows | Double click `start.bat` |
+| Linux or any terminal | Run `./start.sh` |
 
-The launcher builds its own virtual environment and installs everything it needs on first run, so there is nothing to set up by hand.
+The first run builds a `venv` folder and installs the pinned packages from `requirements.txt`. If macOS blocks a double click after a ZIP download, right click `TokIntel.app`, choose Open, and confirm once.
 
-> **macOS:** if you downloaded the ZIP and a double-click is blocked ("unidentified developer"), right-click `TokIntel.app` → **Open** → **Open** once, and it will trust it from then on. Cloning with git avoids this entirely.
+For one lookup from the command line:
 
-Prefer the command line?
-
-```bash
+```sh
 python3 tiktok_created.py charlidamelio
 python3 tiktok_created.py @nasa https://www.tiktok.com/@zachking
-
-# Optional extras (off by default)
-python3 tiktok_created.py charlidamelio --osint    # add pivot links
-python3 tiktok_created.py charlidamelio --flags    # add integrity heuristics
-python3 tiktok_created.py charlidamelio --all      # both
+python3 tiktok_created.py charlidamelio --all
 ```
 
-In the interactive UI, a short numbered menu appears after each card so you can pull the extras up only when you want them.
+`--osint` and `--flags` add the optional sections, and `--all` turns on both. `--file names.txt` reads one target per line. Install the packages yourself first if you run the script directly: `pip install -r requirements.txt`.
 
-## ⚙️ How it works
+## Accounts with audience controls
 
-TikTok embeds the account `createTime` in the JSON on every public profile page, so one request to the profile is enough to read it. Video IDs are snowflakes, so a video's upload time comes from `id >> 32`. No login and no third party API for public accounts, which is almost all of them.
+Some accounts use TikTok's audience controls, such as the 18 and older setting. TikTok won't show those profiles to anyone who isn't signed in, so a normal lookup returns nothing for them.
 
-## 🔒 Accounts with audience controls on (optional)
+When that happens, the interface asks which browser you're signed in to TikTok on (chrome, firefox, edge, brave or safari) and reads the account with that login. The login is read on your computer for that one lookup. On the command line, set `TIKTOK_COOKIES_FROM_BROWSER=chrome` first, or put your `sessionid` value in a gitignored `tiktok_session.txt`.
 
-A few accounts turn on TikTok's audience controls, for example the "18 and older" setting. TikTok then refuses to show that profile to anyone who is not signed in, so a normal lookup gets no date or stats back. That is the account owner's setting, not a limit of this tool, and most accounts have it off and need nothing.
+## Limits
 
-You can still read these with your own TikTok login, and there is nothing to install or paste. Just look the account up in the app. When it is locked, it asks:
+- It reads public profile pages only.
+- Same username matches are leads, not identification.
+- Use it only where the law and TikTok's terms allow. The tool is meant for research and learning.
 
-```
-read it with  chrome / firefox / edge / brave / safari
-```
+## Credit and license
 
-Pick the browser you are already signed into TikTok on, and it reads the account with that login. If you are not signed in, it just tells you to sign in and try again, no errors and no dead ends.
+TokIntel is based on [TokIntel](https://github.com/HackUnderway/TokIntel) by Victor Bancayan (Hack Underway), which looks up emails and phone numbers through RapidAPI. This version does account lookups with no key. MIT licensed, see [LICENSE](LICENSE). Security reports go through [SECURITY.md](SECURITY.md).
 
-Your privacy, plainly: the login is read only on your own computer, only for that one lookup. It is never saved, sent anywhere, shown, or written into the code, so a clone or a fork has nothing of yours in it.
-
-Prefer the command line? Set `TIKTOK_COOKIES_FROM_BROWSER=chrome` (or `firefox`, `edge`, `brave`, `safari`) before running, or drop your `sessionid` value into a gitignored `tiktok_session.txt`.
-
-## 📦 Requirements
-
-Python 3.11+. Everything else (`requests`, `colorama`, `rich`, `browser-cookie3` for the 18+ unlock, and `Pillow` for the photo-match) is installed automatically by the launcher, or with `pip install -r requirements.txt`.
-
-## 🙌 Credit
-
-Built on top of [TokIntel](https://github.com/HackUnderway/TokIntel) by Victor Bancayan (Hack Underway). The original does email and phone lookups through RapidAPI. This build goes a different way: no key at all, for looking up an account and finding the real person behind it. Licensed under MIT, see [LICENSE](LICENSE).
-
-## ⚠️ Disclaimer
-
-For educational and OSINT research only. It reads public profile data. Do not use it for anything illegal.
+Site: [thyfwxit.com](https://thyfwxit.com)
